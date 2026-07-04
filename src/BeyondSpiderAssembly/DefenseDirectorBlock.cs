@@ -1,0 +1,72 @@
+using System.Collections.Generic;
+using Modding.Blocks;
+using UnityEngine;
+
+namespace BeyondSpiderAssembly
+{
+    public class DefenseDirectorBlock : SpaceBlock
+    {
+        public MSlider DefendedRadius;
+        public MMenu Priority;
+
+        public override void SafeAwake()
+        {
+            base.SafeAwake();
+            gameObject.name = "BeyondSpider Defense Director";
+            DefendedRadius = AddSlider("Defended Radius", "BSDefendedRadius", 450f, 50f, 1500f);
+            Priority = AddMenu("Target Priority", 0, new List<string> { "Time to impact", "Heavy threats" }, false);
+        }
+
+        public override void OnSimulateStart()
+        {
+            base.OnSimulateStart();
+            ShipState ship = OwnShip();
+            if (ship != null)
+            {
+                SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Directors);
+            }
+        }
+
+        public override void OnSimulateStop()
+        {
+            ShipState ship = OwnShip();
+            if (ship != null)
+            {
+                SpaceCombatRegistry.RemoveSubsystem(this, ship.Directors);
+            }
+        }
+
+        public override void SimulateFixedUpdateHost()
+        {
+            ShipState ship = OwnShip();
+            if (ship == null || ship.Core == null)
+            {
+                return;
+            }
+
+            FireSolution best = new FireSolution();
+            float bestScore = -1f;
+            for (int i = 0; i < ship.Tracks.Count; i++)
+            {
+                SensorTrack track = ship.Tracks[i];
+                if (track.Distance > DefendedRadius.Value)
+                {
+                    continue;
+                }
+
+                float threat = track.Kind == TrackKind.HeavyMissile ? 1000f : 200f;
+                float ttiScore = 100f / Mathf.Max(1f, track.TimeToImpact);
+                float score = Priority.Value == 0 ? ttiScore + threat * 0.01f : threat + ttiScore;
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best.Target = track.Target;
+                    best.AimPoint = track.Position + track.Velocity * Mathf.Clamp(track.TimeToImpact, 0f, 2f);
+                    best.TimeToImpact = track.TimeToImpact;
+                    best.Priority = score;
+                }
+            }
+            ship.DefensiveSolution = best;
+        }
+    }
+}

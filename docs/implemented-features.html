@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BeyondSpider 太空战 Mod 第一版功能说明</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101114;
+      --panel: #191b20;
+      --panel-2: #20232a;
+      --text: #eceff4;
+      --muted: #aab1bf;
+      --line: #343946;
+      --accent: #73d2de;
+      --warn: #f4c95d;
+      --ok: #8bd17c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      line-height: 1.6;
+    }
+    header {
+      padding: 32px 40px 20px;
+      border-bottom: 1px solid var(--line);
+      background: #15171c;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 28px 24px 48px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin: 34px 0 14px;
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+    p { color: var(--muted); }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 20px;
+    }
+    .metric, .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .metric strong {
+      display: block;
+      font-size: 22px;
+      color: var(--accent);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+    }
+    .card h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+    }
+    .tag {
+      display: inline-block;
+      margin: 0 6px 8px 0;
+      padding: 2px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      background: var(--panel-2);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: var(--panel-2);
+      color: var(--text);
+      font-weight: 600;
+    }
+    tr:last-child td { border-bottom: 0; }
+    code {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--accent);
+    }
+    .status-ok { color: var(--ok); font-weight: 600; }
+    .status-wip { color: var(--warn); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>BeyondSpider 太空战 Mod 第一版功能说明</h1>
+    <p>当前版本聚焦“防御战可玩切片”：舰船能量、传感器轨迹、防御指挥、护盾与近防炮对抗重型导弹。</p>
+    <div class="summary">
+      <div class="metric"><strong>8</strong>已注册零件 XML</div>
+      <div class="metric"><strong>7</strong>本地复用资源目录</div>
+      <div class="metric"><strong>1</strong>编译程序集：BeyondSpiderAssembly.dll</div>
+      <div class="metric"><strong>0</strong>跨 mod 资源路径</div>
+    </div>
+  </header>
+
+  <main>
+    <h2>已经实现的系统</h2>
+    <div class="grid">
+      <section class="card">
+        <h3>舰船身份与能量网</h3>
+        <span class="tag">Fusion Ship Core</span>
+        <span class="tag">EnergyGrid</span>
+        <p>舰船核心注册本机为一艘可被探测的舰船，并提供总能量、装甲/护盾/武器能量分配。运行时 HUD 显示反应堆输出和电容电量。</p>
+      </section>
+      <section class="card">
+        <h3>舰长指挥优先级</h3>
+        <span class="tag">Captain</span>
+        <span class="tag">MKey</span>
+        <p>舰长零件已从能量核心拆出。模拟中按 <code>T</code> 切换 <code>AntiAir</code> / <code>AntiShip</code> 优先级，HUD 会显示当前状态。</p>
+      </section>
+      <section class="card">
+        <h3>电容缓冲</h3>
+        <span class="tag">Super Capacitor</span>
+        <span class="tag">Armor / Shield / Weapon / Universal</span>
+        <p>电容按能量总线注册容量，能量系统会从对应总线与通用电容中扣除消耗。</p>
+      </section>
+      <section class="card">
+        <h3>雷达轨迹</h3>
+        <span class="tag">Radar Panel</span>
+        <span class="tag">TrackRegistry</span>
+        <p>雷达按范围、锥角和 IFF 过滤可追踪对象，生成舰船共享的传感器轨迹和来袭时间估计。</p>
+      </section>
+      <section class="card">
+        <h3>防御指挥</h3>
+        <span class="tag">Defense Director</span>
+        <span class="tag">FireSolution</span>
+        <p>防御指挥从传感器轨迹中选择防御目标，当前支持按来袭时间或重威胁优先生成防御解算。</p>
+      </section>
+      <section class="card">
+        <h3>护盾与近防</h3>
+        <span class="tag">Shield Projector</span>
+        <span class="tag">CIWS Block</span>
+        <p>护盾消耗护盾能量削弱重型导弹速度并造成少量损伤；CIWS 消耗武器能量，对防御指挥指定的重型导弹造成持续伤害。</p>
+      </section>
+      <section class="card">
+        <h3>重型核导弹目标</h3>
+        <span class="tag">Heavy Nuclear Missile</span>
+        <span class="tag">ITrackable</span>
+        <p>重型导弹可手动按 <code>X</code> 发射，或启用 Auto Launch。它注册为重型威胁，可被雷达发现、护盾削弱、CIWS 拦截。</p>
+      </section>
+    </div>
+
+    <h2>零件清单</h2>
+    <table>
+      <thead>
+        <tr><th>零件</th><th>脚本文件</th><th>XML</th><th>状态</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Fusion Ship Core</td><td><code>SpaceShipCore.cs</code></td><td><code>ShipCore.xml</code></td><td class="status-ok">已实现</td></tr>
+        <tr><td>Captain</td><td><code>SpaceCaptainBlock.cs</code></td><td><code>Captain.xml</code></td><td class="status-ok">已实现</td></tr>
+        <tr><td>Super Capacitor</td><td><code>SuperCapacitorBlock.cs</code></td><td><code>SuperCapacitor.xml</code></td><td class="status-ok">已实现</td></tr>
+        <tr><td>Radar Panel</td><td><code>RadarPanelBlock.cs</code></td><td><code>RadarPanel.xml</code></td><td class="status-ok">已实现</td></tr>
+        <tr><td>Defense Director</td><td><code>DefenseDirectorBlock.cs</code></td><td><code>DefenseDirector.xml</code></td><td class="status-ok">已实现</td></tr>
+        <tr><td>Shield Projector</td><td><code>ShieldProjectorBlock.cs</code></td><td><code>ShieldProjector.xml</code></td><td class="status-ok">已实现</td></tr>
+        <tr><td>CIWS Block</td><td><code>CiwsBlock.cs</code></td><td><code>CiwsBlock.xml</code></td><td class="status-ok">已实现</td></tr>
+        <tr><td>Heavy Nuclear Missile</td><td><code>HeavyNuclearMissileBlock.cs</code></td><td><code>HeavyNuclearMissile.xml</code></td><td class="status-ok">已实现</td></tr>
+      </tbody>
+    </table>
+
+    <h2>当前限制</h2>
+    <table>
+      <thead>
+        <tr><th>范围</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>联网同步</td><td class="status-wip">第一版主要是主机本地逻辑，尚未做完整多人同步消息。</td></tr>
+        <tr><td>视觉特效</td><td class="status-wip">目前主要复用模型和调试线，尚未接入完整枪口、爆炸、护盾场表现。</td></tr>
+        <tr><td>反舰优先级</td><td class="status-wip">舰长优先级状态已存在并可切换，但当前防御切片还没有完整反舰武器消费该状态。</td></tr>
+        <tr><td>伤害模型</td><td class="status-wip">CIWS/护盾/导弹生命为第一版数值模型，纳米装甲与结构破坏还未接入。</td></tr>
+      </tbody>
+    </table>
+
+    <h2>测试建议</h2>
+    <p>防御方放置 <code>Fusion Ship Core</code>、<code>Captain</code>、<code>Super Capacitor</code>、<code>Radar Panel</code>、<code>Defense Director</code>、<code>Shield Projector</code> 和 <code>CIWS Block</code>。攻击方放置 <code>Heavy Nuclear Missile</code>，对准舰船后按 <code>X</code> 发射。观察 HUD 的轨迹数、防御目标、能量和舰长优先级。</p>
+  </main>
+</body>
+</html>

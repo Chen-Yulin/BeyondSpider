@@ -1,0 +1,30 @@
+ManifestFileVersion: 0
+CRC: 3806034490
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: b8c6c97f77ec1fbf3ca94fef86d0f1f1
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: 8e73928d58048341e9b2fe1dbcc1debf
+HashAppended: 0
+ClassTypes:
+- Class: 1
+  Script: {instanceID: 0}
+- Class: 4
+  Script: {instanceID: 0}
+- Class: 21
+  Script: {instanceID: 0}
+- Class: 28
+  Script: {instanceID: 0}
+- Class: 48
+  Script: {instanceID: 0}
+- Class: 198
+  Script: {instanceID: 0}
+- Class: 199
+  Script: {instanceID: 0}
+Assets:
+- Assets/TorpedoTrail/TorpedoTrail.prefab
+- Assets/TorpedoTrail/shipWave.prefab
+- Assets/TorpedoTrail/TorpedoHit.prefab
+Dependencies: []

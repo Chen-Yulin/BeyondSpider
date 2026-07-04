@@ -1,0 +1,30 @@
+<Block>
+	<Debug>false</Debug>
+	<ID>2</ID>
+	<Name>Super Capacitor</Name>
+	<Mass>0.5</Mass>
+	<Script>BeyondSpiderAssembly.SuperCapacitorBlock</Script>
+	<Mesh name="BS SuperCap Mesh">
+		<Position x="0.0" y="0.0" z="0.0" />
+		<Rotation x="90" y="0" z="0" />
+		<Scale x="0.35" y="0.35" z="0.35" />
+	</Mesh>
+	<Texture name="BS SuperCap Texture" />
+	<Icon>
+		<Position x="0.0" y="-0.2" z="-0.2" />
+		<Rotation x="45" y="225" z="0" />
+		<Scale x="0.25" y="0.25" z="0.25" />
+	</Icon>
+	<Colliders>
+		<BoxCollider>
+			<Position x="0.0" y="0.0" z="0.22" />
+			<Rotation x="0" y="0" z="0" />
+			<Scale x="0.45" y="0.45" z="0.45" />
+		</BoxCollider>
+	</Colliders>
+	<BasePoint hasAddingPoint="false">
+		<Stickiness enabled="true" radius="0.4" />
+		<Motion x="false" y="false" z="false" />
+	</BasePoint>
+	<AddingPoints />
+</Block>

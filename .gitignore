@@ -1,0 +1,7 @@
+# Besiege Mod .gitignore
+# This prevents build artifacts and other junk from being committed to Git repositories, if you decide to use Git for version control.
+
+/src/.vs/
+/src/**/bin/
+/src/**/obj/
+**/*.dll

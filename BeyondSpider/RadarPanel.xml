@@ -1,0 +1,30 @@
+<Block>
+	<Debug>false</Debug>
+	<ID>3</ID>
+	<Name>Radar Panel</Name>
+	<Mass>1.0</Mass>
+	<Script>BeyondSpiderAssembly.RadarPanelBlock</Script>
+	<Mesh name="BS Radar Mesh">
+		<Position x="0.0" y="0.0" z="0.0" />
+		<Rotation x="180" y="0" z="0" />
+		<Scale x="0.4" y="0.4" z="0.4" />
+	</Mesh>
+	<Texture name="BS Radar Texture" />
+	<Icon>
+		<Position x="-0.05" y="-0.1" z="0.0" />
+		<Rotation x="45" y="-45" z="0.0" />
+		<Scale x="0.35" y="0.35" z="0.35" />
+	</Icon>
+	<Colliders>
+		<BoxCollider>
+			<Position x="0.0" y="0.0" z="0.4" />
+			<Rotation x="0" y="0" z="0" />
+			<Scale x="0.7" y="0.7" z="0.5" />
+		</BoxCollider>
+	</Colliders>
+	<BasePoint hasAddingPoint="false">
+		<Stickiness enabled="true" radius="0.6" />
+		<Motion x="false" y="false" z="false" />
+	</BasePoint>
+	<AddingPoints />
+</Block>

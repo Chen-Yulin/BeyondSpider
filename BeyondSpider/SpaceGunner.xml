@@ -1,0 +1,30 @@
+<Block>
+	<Debug>false</Debug>
+	<ID>12</ID>
+	<Name>Space Gunner</Name>
+	<Mass>0.2</Mass>
+	<Script>BeyondSpiderAssembly.SpaceGunnerBlock</Script>
+	<Mesh name="BS Migrated Gunner Mesh">
+		<Position x="0.0" y="0" z="0.0" />
+		<Rotation x="90" y="0" z="0" />
+		<Scale x="0.22" y="0.22" z="0.22" />
+	</Mesh>
+	<Texture name="BS Migrated Gunner Texture" />
+	<Icon>
+		<Position x="0.1" y="-0.1" z="-0.4" />
+		<Rotation x="45" y="225" z="0" />
+		<Scale x="0.4" y="0.4" z="0.4" />
+	</Icon>
+	<Colliders>
+		<BoxCollider>
+			<Position x="0.0" y="0.0" z="0.14" />
+			<Rotation x="0" y="0" z="0" />
+			<Scale x="0.3" y="0.3" z="0.3" />
+		</BoxCollider>
+	</Colliders>
+	<BasePoint hasAddingPoint="false">
+		<Stickiness enabled="true" radius="0.3" />
+		<Motion x="false" y="false" z="false" />
+	</BasePoint>
+	<AddingPoints />
+</Block>

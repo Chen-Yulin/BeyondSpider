@@ -1,0 +1,32 @@
+ManifestFileVersion: 0
+CRC: 260450555
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: 8d0bcb4d0504ac93e6e2c5358003c4d0
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: 32a0da50f4c5f22c5624d598a44d99c7
+HashAppended: 0
+ClassTypes:
+- Class: 1
+  Script: {instanceID: 0}
+- Class: 4
+  Script: {instanceID: 0}
+- Class: 21
+  Script: {instanceID: 0}
+- Class: 23
+  Script: {instanceID: 0}
+- Class: 33
+  Script: {instanceID: 0}
+- Class: 43
+  Script: {instanceID: 0}
+- Class: 48
+  Script: {instanceID: 0}
+- Class: 64
+  Script: {instanceID: 0}
+Assets:
+- Assets/ArmourVis/TurrentVis.prefab
+- Assets/ArmourVis/SingleVis.prefab
+- Assets/ArmourVis/WellVis.prefab
+Dependencies: []

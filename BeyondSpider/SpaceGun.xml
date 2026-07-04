@@ -1,0 +1,30 @@
+<Block>
+	<Debug>false</Debug>
+	<ID>10</ID>
+	<Name>Space Kinetic Gun</Name>
+	<Mass>0.45</Mass>
+	<Script>BeyondSpiderAssembly.SpaceGunBlock</Script>
+	<Mesh name="BS Migrated Gun Mesh">
+		<Position x="0.0" y="0" z="0.0" />
+		<Rotation x="90" y="0" z="0" />
+		<Scale x="0.22" y="0.22" z="0.22" />
+	</Mesh>
+	<Texture name="BS Migrated Gun Texture" />
+	<Icon>
+		<Position x="0.1" y="-0.1" z="-0.4" />
+		<Rotation x="45" y="225" z="0" />
+		<Scale x="0.45" y="0.45" z="0.45" />
+	</Icon>
+	<Colliders>
+		<BoxCollider>
+			<Position x="0.0" y="0.0" z="0.2" />
+			<Rotation x="0" y="0" z="0" />
+			<Scale x="0.35" y="0.35" z="0.5" />
+		</BoxCollider>
+	</Colliders>
+	<BasePoint hasAddingPoint="false">
+		<Stickiness enabled="true" radius="0.3" />
+		<Motion x="false" y="false" z="false" />
+	</BasePoint>
+	<AddingPoints />
+</Block>

@@ -1,0 +1,30 @@
+<Block>
+	<Debug>false</Debug>
+	<ID>1</ID>
+	<Name>Fusion Ship Core</Name>
+	<Mass>0.3</Mass>
+	<Script>BeyondSpiderAssembly.SpaceShipCore</Script>
+	<Mesh name="BS FusionCore Mesh">
+		<Position x="0.0" y="0.0" z="0" />
+		<Rotation x="90" y="0" z="0" />
+		<Scale x="0.28" y="0.28" z="0.28" />
+	</Mesh>
+	<Texture name="BS FusionCore Texture" />
+	<Icon>
+		<Position x="0.25" y="-0.3" z="-0.1" />
+		<Rotation x="45" y="225" z="0" />
+		<Scale x="0.18" y="0.18" z="0.18" />
+	</Icon>
+	<Colliders>
+		<BoxCollider>
+			<Position x="0.0" y="0.0" z="0.35" />
+			<Rotation x="0" y="0.0" z="0" />
+			<Scale x="0.55" y="0.55" z="0.55" />
+		</BoxCollider>
+	</Colliders>
+	<BasePoint hasAddingPoint="false">
+		<Stickiness enabled="true" radius="0.3" />
+		<Motion x="false" y="false" z="false" />
+	</BasePoint>
+	<AddingPoints />
+</Block>

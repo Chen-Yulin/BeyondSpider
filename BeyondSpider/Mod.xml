@@ -1,0 +1,253 @@
+<Mod>
+	<!-- Mod manifest file.
+		 You should at the very least replace the values marked with FIX.
+		 
+		 See the documentation for further information on any of these elements.
+	-->
+
+	<!-- General information about the mod. -->
+	<Name>BeyondSpider</Name>
+	<Author>Chen, Yulin</Author>
+	<!-- Major.Minor.Build -->
+	<Version>0.1.0</Version>
+	
+	<Description>
+First playable space-combat slice: ship core, energy grid, capacitors, radar tracks, defense director, shield projector, CIWS, and heavy incoming missile.
+	</Description>
+	
+	<!-- Square icon of the mod. Texture defined in the Resources section.
+		 This is displayed in the mod list and, if WorkshopThumbnail is not set, used as thumbnail when uploaded to the Steam workshop. -->
+	<!-- <Icon name="icon" /> -->
+	
+	<!-- Texture resource used as thumbnail when uploading the mod to the workshop.
+		 If this is not present, the Icon texture is used instead.
+		 This can be set to have different icons in the mod list and the workshop. -->
+	<!-- <WorkshopThumbnail name="thumbnail" /> -->
+	
+	<!-- Enables reloading of various values at runtime. This is normally triggered automatically when a file is changed,
+		 you can also trigger it by pressing Ctrl+H.
+		 Reloadable values include:
+			- Colliders
+			- Adding Points
+			- FireInteractions
+			- Mesh Transforms
+		 
+		 Also gives some extra information about warnings and errors parsing the XML files, at the cost
+		 of a slight increase in loading time for mods with many XML elements.
+		 
+		 It is generally recommended to turn this on while developing the mod, but keep it off for any releases.
+		 Important: You cannot upload mods to Steam or WeGame while Debug is turned on.
+		 
+		 Note: This value is independent of the Debug values for specific Blocks and Entities.-->
+	<Debug>true</Debug>
+	
+	<!-- Whether the mod can be used in MP or only in SP.
+		 SP-only mods are easier to write but obviously more limited in their uses.
+		 SP-only mods will be loaded when the first singleplayer level is loaded.
+		 Once an SP-only mod was loaded, it is impossible to start a multiplayer game until the game is restarted since the mod can't be unloaded again. -->
+	<MultiplayerCompatible>true</MultiplayerCompatible>
+	
+	<!-- Include this to make the mod be loaded in the title screen.
+		 Normally mods will only be loaded when the actual game is entered
+		 (i.e. when starting/joining an MP session or entering an SP level).
+		 
+		 Only use this if there is a good reason for it!
+		 Mods that are immediately loaded when starting the game are significantly
+		 less user-friendly, whenever the mod is disabled the game needs to be restarted.-->
+	<!-- <LoadInTitleScreen /> -->
+	
+	<!-- Note on IDs -->
+	<!-- Many elements of your mod need to have an ID assigned that will identify them.
+		 This includes blocks, entities, triggers and events.
+		 IDs are always integers (except the mod ID, that is an unsigned long).
+		 
+		 Except for the ID of the mod itself, they are always local to the mod.
+		 That means you do not need to worry about any conflicts with other mods, because
+		 the mod loader identifies these elements using the mod ID and the element ID.
+		 
+		 You should not change IDs after you have published your mod in any way.
+		 If you do, saved machines and levels will not load the elements correctly anymore.
+		 
+		 Do not rely on the game using the IDs you specified internally in fields such as in BlockBehaviour.BlockID.
+		 In many cases (e.g. blocks and entities) the game will identify your elements by another ID computed based
+		 on the mod and element IDs.
+	-->
+	
+	<!-- Any assemblies that contain code for your mod.
+		 If an assembly listed here contains an implementation of the Mod class,
+		 its OnLoad method will be called.
+		 BlockScripts for your blocks (if any) will be searched for in these assemblies.
+		 The path attribute is relative to the location of this file. 
+		 Specify 'minChangeset' and 'maxChangeset' to constrain which game versions an assembly runs on.
+		 (The changeset is the number next to the version number - e.g. for v1.77-12345, 12345 is the changeset.)-->
+	<Assemblies>
+		<Assembly path="BeyondSpiderAssembly.dll" />
+		<!-- <ScriptAssembly path="SomeAssembly/" /> -->
+	</Assemblies>
+	
+	<!-- Any blocks your mod adds to the game.
+		 The path attribute is relative to the location of this file. -->
+	<Blocks>
+		<Block path="ShipCore.xml" />
+		<Block path="Captain.xml" />
+		<Block path="SuperCapacitor.xml" />
+		<Block path="RadarPanel.xml" />
+		<Block path="DefenseDirector.xml" />
+		<Block path="ShieldProjector.xml" />
+		<Block path="CiwsBlock.xml" />
+		<Block path="HeavyNuclearMissile.xml" />
+		<Block path="SpaceFlakTurret.xml" />
+		<Block path="SpaceGun.xml" />
+		<Block path="SpaceInterceptorLauncher.xml" />
+		<Block path="SpaceGunner.xml" />
+	</Blocks>
+	
+	<!-- Any entities (level objects) your mod adds to the game.
+		 The path attribute is relative to the location of this file. -->
+	<Entities>
+		<!-- <Entity path="SomeEntity.xml" /> -->
+	</Entities>
+	
+	<!-- Any logic trigger types your mod adds to the game. -->
+	<!-- See the ModTriggers class for info on how to activate your triggers. -->
+	<Triggers>
+		
+	</Triggers>
+	
+	<!-- Any logic event types your mod adds to the game. -->
+	<!-- See the ModEvents class for info on how to handle your events being activated. -->
+	<Events>
+		
+	</Events>
+	
+	<!-- Access these keys using the ModKeys class. -->
+	<Keys>
+		<!--<Key name="Sample Key" defaultModifier="LeftControl" defaultTrigger="U" />-->
+	</Keys>
+	
+	<!-- The mod loader will automatically make all resources listed here available
+		 to your mod via the ModResource class.
+		 The path attribute is relative to the Resources/ directory.
+		 You also need to list resources used in your Blocks and Entities.
+		 Available resource types are Mesh, Texture, AudioClip, and AssetBundle. -->
+	<Resources>
+		<Mesh name="BS FusionCore Mesh" path="FusionCore\boiler.obj"/>
+		<Texture name="BS FusionCore Texture" path="FusionCore\Engine.png"/>
+		<Mesh name="BS Captain Mesh" path="ShipCore\captain.obj"/>
+		<Texture name="BS Captain Texture" path="ShipCore\captain.png"/>
+		<Mesh name="BS DefenseDirector Mesh" path="DefenseDirector\AAController.obj"/>
+		<Texture name="BS DefenseDirector Texture" path="DefenseDirector\AAMode.png"/>
+		<Mesh name="BS SuperCap Mesh" path="SuperCapacitor\Battery.obj"/>
+		<Texture name="BS SuperCap Texture" path="SuperCapacitor\Battery.png"/>
+		<Mesh name="BS Radar Mesh" path="Radar\radar.obj"/>
+		<Texture name="BS Radar Texture" path="Radar\radar.png"/>
+		<Mesh name="BS ShieldProjector Mesh" path="ShieldProjector\frustum.obj"/>
+		<Texture name="BS ShieldProjector Texture" path="ShieldProjector\AALock.png"/>
+		<Mesh name="BS CIWS Mesh" path="CIWS\sample.obj"/>
+		<Texture name="BS CIWS Texture" path="CIWS\sample.png"/>
+		<Mesh name="BS HeavyMissile Mesh" path="HeavyMissile\Aim-54.obj"/>
+		<Texture name="BS HeavyMissile Texture" path="HeavyMissile\Aim-54.png"/>
+		<Mesh name="BS Migrated AA Sample Mesh" path="WW2Migrated\AA\sample.obj"/>
+		<Texture name="BS Migrated AA Sample Texture" path="WW2Migrated\AA\sample.png"/>
+		<Mesh name="BS Migrated AA 20 Base Mesh" path="WW2Migrated\AA\20\20 1.obj"/>
+		<Mesh name="BS Migrated AA 20 Gun Mesh" path="WW2Migrated\AA\20\20 2.obj"/>
+		<Texture name="BS Migrated AA 20 Base Texture" path="WW2Migrated\AA\20\20 1.png"/>
+		<Texture name="BS Migrated AA 20 Gun Texture" path="WW2Migrated\AA\20\20 2.png"/>
+		<Mesh name="BS Migrated AA 40x2 Base Mesh" path="WW2Migrated\AA\40\x2\40 x2 1.obj"/>
+		<Mesh name="BS Migrated AA 40x2 Gun Mesh" path="WW2Migrated\AA\40\x2\40 x2 2.obj"/>
+		<Texture name="BS Migrated AA 40x2 Base Texture" path="WW2Migrated\AA\40\x2\40 x2 1.png"/>
+		<Texture name="BS Migrated AA 40x2 Gun Texture" path="WW2Migrated\AA\40\x2\40 x2 2.png"/>
+		<Mesh name="BS Migrated AA 76 Base Mesh" path="WW2Migrated\AA\76\76 1.obj"/>
+		<Mesh name="BS Migrated AA 76 Gun Mesh" path="WW2Migrated\AA\76\76 2.obj"/>
+		<Texture name="BS Migrated AA 76 Base Texture" path="WW2Migrated\AA\76\76 1.png"/>
+		<Texture name="BS Migrated AA 76 Gun Texture" path="WW2Migrated\AA\76\76 2.png"/>
+		<Mesh name="AA-20-1 Mesh" path="WW2Migrated\AA\20\20 1.obj"/>
+		<Mesh name="AA-20-2 Mesh" path="WW2Migrated\AA\20\20 2.obj"/>
+		<Texture name="AA-20-1 Texture" path="WW2Migrated\AA\20\20 1.png"/>
+		<Texture name="AA-20-2 Texture" path="WW2Migrated\AA\20\20 2.png"/>
+		<Mesh name="AA-25-1 Mesh" path="WW2Migrated\AA\25\25 1.obj"/>
+		<Mesh name="AA-25-2 Mesh" path="WW2Migrated\AA\25\25 2.obj"/>
+		<Texture name="AA-25-1 Texture" path="WW2Migrated\AA\25\25 1.png"/>
+		<Texture name="AA-25-2 Texture" path="WW2Migrated\AA\25\25 2.png"/>
+		<Mesh name="AA-40-x2-1 Mesh" path="WW2Migrated\AA\40\x2\40 x2 1.obj"/>
+		<Mesh name="AA-40-x2-2 Mesh" path="WW2Migrated\AA\40\x2\40 x2 2.obj"/>
+		<Texture name="AA-40-x2-1 Texture" path="WW2Migrated\AA\40\x2\40 x2 1.png"/>
+		<Texture name="AA-40-x2-2 Texture" path="WW2Migrated\AA\40\x2\40 x2 2.png"/>
+		<Mesh name="AA-40-x4-1 Mesh" path="WW2Migrated\AA\40\x4\40 x4 1.obj"/>
+		<Mesh name="AA-40-x4-2 Mesh" path="WW2Migrated\AA\40\x4\40 x4 2.obj"/>
+		<Texture name="AA-40-x4-1 Texture" path="WW2Migrated\AA\40\x4\40 x4 1.png"/>
+		<Texture name="AA-40-x4-2 Texture" path="WW2Migrated\AA\40\x4\40 x4 2.png"/>
+		<Mesh name="AA-76-1 Mesh" path="WW2Migrated\AA\76\76 1.obj"/>
+		<Mesh name="AA-76-2 Mesh" path="WW2Migrated\AA\76\76 2.obj"/>
+		<Texture name="AA-76-1 Texture" path="WW2Migrated\AA\76\76 1.png"/>
+		<Texture name="AA-76-2 Texture" path="WW2Migrated\AA\76\76 2.png"/>
+		<Mesh name="AA-100-1 Mesh" path="WW2Migrated\AA\100\100 1.obj"/>
+		<Mesh name="AA-100-2 Mesh" path="WW2Migrated\AA\100\100 2.obj"/>
+		<Texture name="AA-100-1 Texture" path="WW2Migrated\AA\100\100 1.png"/>
+		<Texture name="AA-100-2 Texture" path="WW2Migrated\AA\100\100 2.png"/>
+		<Mesh name="AA-105-1 Mesh" path="WW2Migrated\AA\105\105 1.obj"/>
+		<Mesh name="AA-105-2 Mesh" path="WW2Migrated\AA\105\105 2.obj"/>
+		<Texture name="AA-105-1 Texture" path="WW2Migrated\AA\105\105 1.png"/>
+		<Texture name="AA-105-2 Texture" path="WW2Migrated\AA\105\105 2.png"/>
+		<Mesh name="AA-127-1 Mesh" path="WW2Migrated\AA\127\127 1.obj"/>
+		<Mesh name="AA-127-2 Mesh" path="WW2Migrated\AA\127\127 2.obj"/>
+		<Texture name="AA-127-1 Texture" path="WW2Migrated\AA\127\127 1.png"/>
+		<Texture name="AA-127-2 Texture" path="WW2Migrated\AA\127\127 2.png"/>
+		<Mesh name="AA-113-1 Mesh" path="WW2Migrated\AA\113\113 1.obj"/>
+		<Mesh name="AA-113-2 Mesh" path="WW2Migrated\AA\113\113 2.obj"/>
+		<Texture name="AA-113-1 Texture" path="WW2Migrated\AA\113\113 1.png"/>
+		<Texture name="AA-113-2 Texture" path="WW2Migrated\AA\113\113 2.png"/>
+		<Mesh name="AA-134-1 Mesh" path="WW2Migrated\AA\134\134 1.obj"/>
+		<Mesh name="AA-134-2 Mesh" path="WW2Migrated\AA\134\134 2.obj"/>
+		<Texture name="AA-134-1 Texture" path="WW2Migrated\AA\134\134 1.png"/>
+		<Texture name="AA-134-2 Texture" path="WW2Migrated\AA\134\134 2.png"/>
+		<Mesh name="AA-UK-40-x4-1 Mesh" path="WW2Migrated\AA\UK 40\x4\40 x4 1.obj"/>
+		<Mesh name="AA-UK-40-x4-2 Mesh" path="WW2Migrated\AA\UK 40\x4\40 x4 2.obj"/>
+		<Texture name="AA-UK-40-x4-1 Texture" path="WW2Migrated\AA\UK 40\x4\40 x4 1.png"/>
+		<Texture name="AA-UK-40-x4-2 Texture" path="WW2Migrated\AA\UK 40\x4\40 x4 2.png"/>
+		<Mesh name="AA-UK-40-x8-1 Mesh" path="WW2Migrated\AA\UK 40\x8\40 x8 1.obj"/>
+		<Mesh name="AA-UK-40-x8-2 Mesh" path="WW2Migrated\AA\UK 40\x8\40 x8 2.obj"/>
+		<Texture name="AA-UK-40-x8-1 Texture" path="WW2Migrated\AA\UK 40\x8\40 x8 1.png"/>
+		<Texture name="AA-UK-40-x8-2 Texture" path="WW2Migrated\AA\UK 40\x8\40 x8 2.png"/>
+		<Mesh name="AA-IJN-127-1 Mesh" path="WW2Migrated\AA\JP 127\127 1.obj"/>
+		<Mesh name="AA-IJN-127-2 Mesh" path="WW2Migrated\AA\JP 127\127 2.obj"/>
+		<Texture name="AA-IJN-127-1 Texture" path="WW2Migrated\AA\JP 127\127 1.png"/>
+		<Texture name="AA-IJN-127-2 Texture" path="WW2Migrated\AA\JP 127\127 2.png"/>
+		<Mesh name="BS Migrated Gun Mesh" path="WW2Migrated\Gun\Gun.obj"/>
+		<Texture name="BS Migrated Gun Texture" path="WW2Migrated\Gun\Gun.png"/>
+		<Mesh name="BS Migrated Cannon Mesh" path="WW2Migrated\Gun\Cannon.obj"/>
+		<Texture name="BS Migrated Cannon Texture" path="WW2Migrated\Gun\Cannon.png"/>
+		<Mesh name="Cannon Mesh" path="WW2Migrated\Gun\Cannon.obj"/>
+		<Texture name="Cannon Texture" path="WW2Migrated\Gun\Cannon.png"/>
+		<Mesh name="BS Migrated TorpedoLauncher Mesh" path="WW2Migrated\Torpedo\TorpedoLauncher.obj"/>
+		<Texture name="BS Migrated TorpedoLauncher Texture" path="WW2Migrated\Torpedo\TorpedoLauncher.png"/>
+		<Mesh name="BS Migrated Torpedo Mesh" path="WW2Migrated\Torpedo\Torpedo.obj"/>
+		<Texture name="BS Migrated Torpedo Texture" path="WW2Migrated\Torpedo\Torpedo.png"/>
+		<Mesh name="BS Migrated Gunner Mesh" path="WW2Migrated\Gunner\gunner.obj"/>
+		<Texture name="BS Migrated Gunner Texture" path="WW2Migrated\Gunner\gunner.png"/>
+		<Texture name="BS Migrated Gunner Alert Texture" path="WW2Migrated\Gunner\alert.png"/>
+		<Mesh name="BS Migrated AAController Mesh" path="WW2Migrated\AAController\AAController.obj"/>
+		<Texture name="BS Migrated AA Mode Texture" path="WW2Migrated\AAController\AAMode.png"/>
+		<Texture name="BS Migrated AA Lock Texture" path="WW2Migrated\AAController\AALock.png"/>
+		<AudioClip name="BS Migrated GunShot Audio" path="WW2Migrated\Gun\fire.wav"/>
+		<AudioClip name="BS Migrated GunExplo Audio" path="WW2Migrated\Gun\explo.wav"/>
+		<AudioClip name="BS Migrated GunPierce Audio" path="WW2Migrated\Gun\pierce.wav"/>
+		<AssetBundle name="space-cannonhit" path="WW2Migrated\space-cannonhit.ab"/>
+		<AssetBundle name="space-gunsmoke" path="WW2Migrated\space-gunsmoke.ab"/>
+		<AssetBundle name="space-torpedotrail" path="WW2Migrated\space-torpedotrail.ab"/>
+		<AssetBundle name="space-aa" path="WW2Migrated\space-aa.ab"/>
+		<AssetBundle name="space-armourvis" path="WW2Migrated\space-armourvis.ab"/>
+		<AssetBundle name="space-firecontrol" path="WW2Migrated\space-firecontrol.ab"/>
+		<AssetBundle name="space-perice" path="WW2Migrated\space-perice.ab"/>
+		<AssetBundle name="space-projector" path="WW2Migrated\space-projector.ab"/>
+		<AssetBundle name="space-smoke" path="WW2Migrated\space-smoke.ab"/>
+
+        <!--<Texture name="icon" path="icon.png" />-->
+        <!--<Texture name="thumbnail" path="thumbnail.png" />-->
+	</Resources>
+
+
+<!-- This value is automatically generated. Do not change it or you may break machine&level save files. -->
+<ID>daafc009-964d-4df2-ac7d-7100a7322def</ID>
+
+</Mod>

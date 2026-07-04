@@ -1,0 +1,27 @@
+ManifestFileVersion: 0
+CRC: 2986942985
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: c9879a944f75acbc9fb70b8c89d9cef4
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: 3f32051c48f6e4c51e88ef166f8452c1
+HashAppended: 0
+ClassTypes:
+- Class: 1
+  Script: {instanceID: 0}
+- Class: 4
+  Script: {instanceID: 0}
+- Class: 21
+  Script: {instanceID: 0}
+- Class: 28
+  Script: {instanceID: 0}
+- Class: 48
+  Script: {instanceID: 0}
+- Class: 119
+  Script: {instanceID: 0}
+Assets:
+- Assets/hithole/torpedoHoleProjector.prefab
+- Assets/hithole/holeProjector.prefab
+Dependencies: []
