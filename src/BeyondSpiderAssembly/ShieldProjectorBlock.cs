@@ -5,6 +5,8 @@ namespace BeyondSpiderAssembly
 {
     public class ShieldProjectorBlock : SpaceBlock
     {
+        private const float HyperVelocityThreshold = 2200f;
+
         public MSlider Radius;
         public MSlider Strength;
 
@@ -47,20 +49,43 @@ namespace BeyondSpiderAssembly
             for (int i = 0; i < targets.Count; i++)
             {
                 HeavyNuclearMissileBlock missile = targets[i] as HeavyNuclearMissileBlock;
-                if (missile == null || !missile.IsAlive || missile.Team == Team)
+                if (missile != null)
                 {
+                    if (!missile.IsAlive || missile.Team == Team)
+                    {
+                        continue;
+                    }
+
+                    float missileDistance = Vector3.Distance(transform.position, missile.Position);
+                    if (missileDistance > Radius.Value)
+                    {
+                        continue;
+                    }
+
+                    float missileEnergyCost = missile.Velocity.sqrMagnitude * missile.ThreatMass * 0.002f / Mathf.Max(0.2f, Strength.Value);
+                    float missileRatio = ship.Energy.Request(EnergyBus.Shield, missileEnergyCost * Time.fixedDeltaTime);
+                    missile.ApplyShieldEffect(missileRatio * Strength.Value);
                     continue;
                 }
 
-                float distance = Vector3.Distance(transform.position, missile.Position);
-                if (distance > Radius.Value)
+                SpaceKineticRound round = targets[i] as SpaceKineticRound;
+                if (round != null)
                 {
-                    continue;
-                }
+                    if (!round.IsAlive || round.Team == Team || round.Velocity.magnitude <= HyperVelocityThreshold)
+                    {
+                        continue;
+                    }
 
-                float energyCost = missile.Velocity.sqrMagnitude * missile.ThreatMass * 0.002f / Mathf.Max(0.2f, Strength.Value);
-                float ratio = ship.Energy.Request(EnergyBus.Shield, energyCost * Time.fixedDeltaTime);
-                missile.ApplyShieldEffect(ratio * Strength.Value);
+                    float roundDistance = Vector3.Distance(transform.position, round.Position);
+                    if (roundDistance > Radius.Value)
+                    {
+                        continue;
+                    }
+
+                    float roundEnergyCost = round.Velocity.sqrMagnitude * round.MassEstimate * 0.002f / Mathf.Max(0.2f, Strength.Value);
+                    float roundRatio = ship.Energy.Request(EnergyBus.Shield, roundEnergyCost * Time.fixedDeltaTime);
+                    round.ApplyShieldEffect(roundRatio * Strength.Value);
+                }
             }
         }
     }

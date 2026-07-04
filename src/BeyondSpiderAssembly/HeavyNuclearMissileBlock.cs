@@ -8,6 +8,7 @@ namespace BeyondSpiderAssembly
         public MSlider HealthSlider;
         public MSlider Thrust;
         public MSlider ThreatMassSlider;
+        public MSlider BlastRadius;
         public MToggle AutoLaunch;
 
         private bool launched;
@@ -29,6 +30,7 @@ namespace BeyondSpiderAssembly
             HealthSlider = AddSlider("Missile Health", "BSMissileHealth", 650f, 100f, 3000f);
             Thrust = AddSlider("Thrust", "BSMissileThrust", 450f, 50f, 3000f);
             ThreatMassSlider = AddSlider("Threat Mass", "BSThreatMass", 50f, 5f, 400f);
+            BlastRadius = AddSlider("Blast Radius", "BSMissileBlastRadius", 40f, 10f, 120f);
         }
 
         public override void OnSimulateStart()
@@ -87,11 +89,35 @@ namespace BeyondSpiderAssembly
         private void Detonate(bool hit)
         {
             SpaceCombatRegistry.UnregisterTrackable(this);
+            ApplyBlastDamageToArmor();
             if (Body != null)
             {
                 Body.velocity *= 0.1f;
             }
             gameObject.SetActive(false);
+        }
+
+        private void ApplyBlastDamageToArmor()
+        {
+            float baseBlastDamage = HealthSlider.Value * 0.6f;
+            foreach (ShipState blastShip in SpaceCombatRegistry.Ships)
+            {
+                for (int i = 0; i < blastShip.Armor.Count; i++)
+                {
+                    NanoArmorBehaviour armor = blastShip.Armor[i];
+                    if (armor == null)
+                    {
+                        continue;
+                    }
+                    float distance = Vector3.Distance(transform.position, armor.transform.position);
+                    if (distance > BlastRadius.Value)
+                    {
+                        continue;
+                    }
+                    float falloff = Mathf.Clamp01(1f - distance / BlastRadius.Value);
+                    armor.ApplyPhysicalDamage(baseBlastDamage * falloff);
+                }
+            }
         }
     }
 }

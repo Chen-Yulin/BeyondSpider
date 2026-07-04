@@ -97,7 +97,7 @@ First playable space-combat slice: ship core, energy grid, capacitors, radar tra
 		<Block path="CiwsBlock.xml" />
 		<Block path="HeavyNuclearMissile.xml" />
 		<Block path="SpaceFlakTurret.xml" />
-		<Block path="SpaceGun.xml" />
+		<Block path="Railgun.xml" />
 		<Block path="SpaceInterceptorLauncher.xml" />
 		<Block path="SpaceGunner.xml" />
 	</Blocks>

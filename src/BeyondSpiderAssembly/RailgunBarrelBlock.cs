@@ -3,14 +3,13 @@ using UnityEngine;
 
 namespace BeyondSpiderAssembly
 {
-    public class SpaceGunBlock : SpaceBlock
+    public class RailgunBarrelBlock : SpaceBlock
     {
         public MKey FireKey;
         public MToggle FireControl;
         public MText GunGroup;
         public MSlider Caliber;
         public MSlider MuzzleVelocity;
-        public MSlider EnergyPerShot;
 
         private float reloadTime;
         private float reload;
@@ -18,13 +17,12 @@ namespace BeyondSpiderAssembly
         public override void SafeAwake()
         {
             base.SafeAwake();
-            gameObject.name = "BeyondSpider Space Gun";
-            FireKey = AddKey("Fire", "BSSpaceGunFire", KeyCode.C);
-            FireControl = AddToggle("Fire Control", "BSSpaceGunFireControl", false);
-            GunGroup = AddText("Gun Group", "BSSpaceGunGroup", "g0");
-            Caliber = AddSlider("Caliber", "BSSpaceGunCaliber", 155f, 20f, 510f);
-            MuzzleVelocity = AddSlider("Muzzle Velocity", "BSSpaceGunVelocity", 520f, 80f, 1800f);
-            EnergyPerShot = AddSlider("Energy Per Shot", "BSSpaceGunEnergy", 60f, 1f, 600f);
+            gameObject.name = "BeyondSpider Railgun Barrel";
+            FireKey = AddKey("Fire", "BSRailgunFire", KeyCode.C);
+            FireControl = AddToggle("Fire Control", "BSRailgunFireControl", false);
+            GunGroup = AddText("Gun Group", "BSRailgunGroup", "g0");
+            Caliber = AddSlider("Caliber", "BSRailgunCaliber", 90f, 20f, 300f);
+            MuzzleVelocity = AddSlider("Muzzle Velocity", "BSRailgunVelocity", 2600f, 1200f, 6000f);
         }
 
         public override void OnSimulateStart()
@@ -79,31 +77,42 @@ namespace BeyondSpiderAssembly
                 return false;
             }
 
+            float massFactor = Caliber.Value / 300f;
+            float energyPerShot = 40f + massFactor * MuzzleVelocity.Value * MuzzleVelocity.Value * 0.00035f;
+
             ShipState ship = OwnShip();
-            if (ship != null && ship.Energy.Request(EnergyBus.Weapon, EnergyPerShot.Value) < 0.25f)
+            if (ship != null && ship.Energy.Request(EnergyBus.Weapon, energyPerShot) < 0.25f)
             {
                 return false;
             }
 
             reload = 0f;
+            float damage = Caliber.Value * 1.1f + massFactor * MuzzleVelocity.Value * MuzzleVelocity.Value * 0.0006f;
+
             GameObject round = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            round.name = "BeyondSpider Kinetic Round";
+            round.name = "BeyondSpider Railgun Slug";
             round.transform.position = transform.position + transform.forward * 1.2f;
             round.transform.localScale = Vector3.one * Mathf.Clamp(Caliber.Value / 220f, 0.12f, 1.7f);
             Rigidbody rb = round.AddComponent<Rigidbody>();
-            rb.mass = Mathf.Max(0.05f, Caliber.Value / 300f);
+            rb.mass = Mathf.Max(0.05f, massFactor);
             rb.drag = 0.005f;
             rb.useGravity = false;
             rb.velocity = direction.normalized * MuzzleVelocity.Value + (Body == null ? Vector3.zero : Body.velocity);
+
             SpaceKineticRound projectile = round.AddComponent<SpaceKineticRound>();
             projectile.OwnerPlayerID = PlayerID;
             projectile.OwnerTeam = Team;
-            projectile.Damage = Caliber.Value * 2f;
+            projectile.Damage = damage;
             projectile.Lifetime = Mathf.Clamp(life + 2f, 2f, 12f);
+            projectile.MassEstimate = rb.mass;
+            projectile.Caliber = Caliber.Value;
+            projectile.SpawnImpactSpark = true;
+
+            SpaceEffectAssets.PlayMuzzleSound(transform, Caliber.Value);
 
             if (Body != null)
             {
-                Body.AddForce(-direction.normalized * Caliber.Value * 3f, ForceMode.Impulse);
+                Body.AddForce(-direction.normalized * (Caliber.Value / 100f) * (MuzzleVelocity.Value / 500f) * 6f, ForceMode.Impulse);
             }
             return true;
         }
@@ -171,7 +180,7 @@ namespace BeyondSpiderAssembly
 
             for (int i = 0; i < ship.Guns.Count; i++)
             {
-                SpaceGunBlock gun = ship.Guns[i];
+                RailgunBarrelBlock gun = ship.Guns[i];
                 if (gun == null || !gun.FireControl.IsActive || gun.GunGroup.Value != GunGroup.Value)
                 {
                     continue;

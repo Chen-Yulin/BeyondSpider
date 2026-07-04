@@ -1,9 +1,9 @@
 <Block>
 	<Debug>false</Debug>
 	<ID>10</ID>
-	<Name>Space Kinetic Gun</Name>
+	<Name>Railgun Barrel</Name>
 	<Mass>0.45</Mass>
-	<Script>BeyondSpiderAssembly.SpaceGunBlock</Script>
+	<Script>BeyondSpiderAssembly.RailgunBarrelBlock</Script>
 	<Mesh name="BS Migrated Gun Mesh">
 		<Position x="0.0" y="0" z="0.0" />
 		<Rotation x="90" y="0" z="0" />

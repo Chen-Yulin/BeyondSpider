@@ -1,3 +1,4 @@
+using Modding;
 using UnityEngine;
 
 namespace BeyondSpiderAssembly
@@ -49,6 +50,60 @@ namespace BeyondSpiderAssembly
         }
     }
 
+    internal static class SpaceEffectAssets
+    {
+        private static GameObject pierceEffectPrefab;
+        private static bool pierceLoadAttempted;
+
+        private static GameObject PierceEffectPrefab
+        {
+            get
+            {
+                if (pierceEffectPrefab == null && !pierceLoadAttempted)
+                {
+                    pierceLoadAttempted = true;
+                    pierceEffectPrefab = ModResource.GetAssetBundle("space-perice").LoadAsset<GameObject>("Perice");
+                }
+                return pierceEffectPrefab;
+            }
+        }
+
+        public static void PlayPierceEffect(Vector3 point, float caliber)
+        {
+            GameObject prefab = PierceEffectPrefab;
+            if (prefab == null)
+            {
+                return;
+            }
+
+            GameObject pierceEffect = Object.Instantiate(prefab, point, Quaternion.identity);
+            pierceEffect.transform.localScale = Vector3.one * Mathf.Max(0.1f, caliber / 400f);
+            Object.Destroy(pierceEffect, 1f);
+
+            AudioSource audioSource = pierceEffect.AddComponent<AudioSource>();
+            audioSource.clip = ModResource.GetAudioClip("BS Migrated GunPierce Audio");
+            audioSource.spatialBlend = 1f;
+            audioSource.volume = Mathf.Clamp01(caliber / 1000f);
+            audioSource.rolloffMode = AudioRolloffMode.Linear;
+            audioSource.maxDistance = 200f;
+            audioSource.Play();
+        }
+
+        public static void PlayMuzzleSound(Transform origin, float caliber)
+        {
+            GameObject sound = new GameObject("BeyondSpider Railgun Muzzle Sound");
+            sound.transform.position = origin.position;
+            AudioSource audioSource = sound.AddComponent<AudioSource>();
+            audioSource.clip = ModResource.GetAudioClip("BS Migrated GunShot Audio");
+            audioSource.spatialBlend = 1f;
+            audioSource.volume = Mathf.Clamp01(caliber / 1000f);
+            audioSource.rolloffMode = AudioRolloffMode.Linear;
+            audioSource.maxDistance = 500f;
+            audioSource.Play();
+            Object.Destroy(sound, 3f);
+        }
+    }
+
     public class SpaceKineticRound : MonoBehaviour, ITrackable
     {
         public int OwnerPlayerID;
@@ -56,6 +111,9 @@ namespace BeyondSpiderAssembly
         public float Damage = 100f;
         public float Lifetime = 8f;
         public float RadiusValue = 0.45f;
+        public float MassEstimate;
+        public float Caliber;
+        public bool SpawnImpactSpark;
 
         private Rigidbody body;
         private float spawnTime;
@@ -90,7 +148,26 @@ namespace BeyondSpiderAssembly
             {
                 missile.ApplyDamage(Damage);
             }
+            DamageRouter.RoutePhysicalHit(collision.collider, Damage);
+            if (SpawnImpactSpark)
+            {
+                SpaceEffectAssets.PlayPierceEffect(transform.position, Caliber);
+            }
             Destroy(gameObject);
+        }
+
+        public void ApplyShieldEffect(float power)
+        {
+            if (body == null || power <= 0f)
+            {
+                return;
+            }
+            if (power > 1.5f)
+            {
+                Destroy(gameObject);
+                return;
+            }
+            body.velocity *= Mathf.Lerp(1f, 0.35f, Mathf.Clamp01(power));
         }
 
         private void OnDestroy()

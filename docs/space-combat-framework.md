@@ -84,12 +84,13 @@ The main implementation rule should be: blocks register capability, managers agg
 - Instant or raycast beam, shield-immune, range falloff and dispersion.
 - Against intact nano armor, only 5% damage passes through; damage rises as local armor integrity falls.
 
-**电磁炮管 / RailgunBarrel**
+**电磁炮管 / RailgunBarrel** — implemented, replaces the earlier plain kinetic gun placeholder (`RailgunBarrelBlock`, block ID 10)
 
 - Barrel-only kinetic weapon with build sliders for caliber and muzzle velocity.
-- Higher caliber and speed increase damage and energy draw.
-- Very high speed makes shield interception more expensive but also more likely to generate heating/slowdown effects.
-- Uses gravity-affected projectile simulation adapted from WW2 `Gun`/`BulletBehaviour`.
+- Energy cost and damage are derived from a kinetic-energy-shaped formula (∝ mass·velocity²), not a flat slider — pushing muzzle velocity up is what makes a shot expensive.
+- Very high speed makes shield interception more expensive: `ShieldProjectorBlock` reacts to any `SpaceKineticRound` above a hyper-velocity threshold (2200 m/s), slowing or fully stopping it depending on available Shield-bus power.
+- Zero-gravity projectile (`SpaceKineticRound`, `useGravity=false`), consistent with the rest of this mod's space-combat kinetic rounds — not gravity-affected like the original WW2 naval `Gun`/`BulletBehaviour` reference.
+- Pierce/impact effect is the actual WW2-Naval `Perice` prefab (from the ported `space-perice` asset bundle) plus its ported audio clip; no explosion effect, since a railgun slug has no charge to detonate.
 
 **炮手 / SpaceGunner**
 
@@ -261,6 +262,14 @@ Use a simple first version:
 - Tune energy costs, shield slowdown, armor repair, laser reflection, and missile survivability.
 - Add multiplayer sync only for authoritative state and visible effects, not every local calculation.
 
-## First Playable Slice
+## Validation Slices
 
-The first playable slice is defensive combat. Build ShipCore, EnergyGrid, RadarPanel, DefenseDirector, CIWS, and one incoming heavy missile first. This validates the unique systems: energy spikes, radar tracks, shield interception, point defense, and nano armor. Offensive railguns/lasers can then reuse the same target, energy, and damage pathways.
+Two validation slices exist for this framework. Build whichever is marked current; treat the other as a regression target, not the active focus. See `docs/adr/0002-prioritize-energy-firepower-armor-chain.md` for why the priority switched.
+
+**Current priority: Energy-Firepower-Armor slice**
+
+Build ShipCore, EnergyGrid, SuperCapacitor, one weapon (`RailgunBarrelBlock` or `SpaceFlakTurretBlock`), and nano armor on a target hull section. This validates energy budget allocation across buses, weapon energy draw and degrade-under-low-power behavior, and armor integrity loss/repair against incoming fire. `RailgunBarrelBlock`/`SpaceFlakTurretBlock` already draw from the Weapon bus, and nano armor/`DamageRouter` are now implemented (`NanoArmorBlock.cs`, `DamageRouter.cs`) — the energy-firepower-armor loop is closed end to end. Radar/defense systems are not required for this slice.
+
+**Secondary priority: Missile-Defense slice**
+
+Build ShipCore, EnergyGrid, RadarPanel, DefenseDirector, CIWS, and one incoming heavy missile. This validates energy spikes, radar tracks, shield interception, and point defense. This was the original first playable slice and already has a working skeleton (RadarPanel, DefenseDirector, ShieldProjector, CiwsBlock, SpaceInterceptorLauncher, HeavyNuclearMissile). Offensive railguns/lasers can eventually reuse the same target, energy, and damage pathways once the Energy-Firepower-Armor slice is validated.

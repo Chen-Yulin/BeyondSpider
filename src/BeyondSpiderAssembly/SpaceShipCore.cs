@@ -8,6 +8,7 @@ namespace BeyondSpiderAssembly
         public MSlider ArmorShare;
         public MSlider ShieldShare;
         public MSlider WeaponShare;
+        public MToggle ShowArmorHP;
 
         public string DisplayName;
 
@@ -25,6 +26,7 @@ namespace BeyondSpiderAssembly
             ArmorShare = AddSlider("Armor Share", "BSArmorShare", 1f, 0f, 5f);
             ShieldShare = AddSlider("Shield Share", "BSShieldShare", 2f, 0f, 5f);
             WeaponShare = AddSlider("Weapon Share", "BSWeaponShare", 2f, 0f, 5f);
+            ShowArmorHP = AddToggle("Show Armor HP", "BSShowArmorHP", false);
         }
 
         public override void OnSimulateStart()

@@ -67,7 +67,9 @@
     <Compile Include="HeavyNuclearMissileBlock.cs" />
     <Compile Include="SpaceBallistics.cs" />
     <Compile Include="SpaceFlakTurretBlock.cs" />
-    <Compile Include="SpaceGunBlock.cs" />
+    <Compile Include="RailgunBarrelBlock.cs" />
+    <Compile Include="NanoArmorBlock.cs" />
+    <Compile Include="DamageRouter.cs" />
     <Compile Include="SpaceInterceptorLauncherBlock.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>

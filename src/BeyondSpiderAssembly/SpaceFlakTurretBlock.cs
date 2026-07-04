@@ -430,6 +430,8 @@ namespace BeyondSpiderAssembly
             projectile.Damage = damage;
             projectile.Lifetime = lifetime;
             projectile.RadiusValue = Mathf.Clamp(shotCaliber / 100f, 0.8f, 2.5f);
+            projectile.MassEstimate = rb.mass;
+            projectile.Caliber = shotCaliber;
 
             Destroy(round, lifetime + 0.2f);
         }

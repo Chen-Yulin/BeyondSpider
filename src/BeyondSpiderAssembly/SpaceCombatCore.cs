@@ -105,9 +105,13 @@ namespace BeyondSpiderAssembly
             {
                 spentThisSecond[i] = Mathf.Lerp(spentThisSecond[i], 0f, Mathf.Clamp01(deltaTime * 2f));
             }
-            Charge(EnergyBus.Armor, ReactorOutput * reactorShare[0] * deltaTime);
-            Charge(EnergyBus.Shield, ReactorOutput * reactorShare[1] * deltaTime);
-            Charge(EnergyBus.Weapon, ReactorOutput * reactorShare[2] * deltaTime);
+            float overflow = Charge(EnergyBus.Armor, ReactorOutput * reactorShare[0] * deltaTime)
+                           + Charge(EnergyBus.Shield, ReactorOutput * reactorShare[1] * deltaTime)
+                           + Charge(EnergyBus.Weapon, ReactorOutput * reactorShare[2] * deltaTime);
+            if (overflow > 0f)
+            {
+                Charge(EnergyBus.Universal, overflow);
+            }
         }
 
         public float Request(EnergyBus bus, float amount)
@@ -148,10 +152,13 @@ namespace BeyondSpiderAssembly
             return spentThisSecond[(int)bus];
         }
 
-        private void Charge(EnergyBus bus, float amount)
+        private float Charge(EnergyBus bus, float amount)
         {
             int index = (int)bus;
-            capacitor[index] = Mathf.Min(capacity[index], capacitor[index] + amount);
+            float room = Mathf.Max(0f, capacity[index] - capacitor[index]);
+            float applied = Mathf.Min(room, amount);
+            capacitor[index] += applied;
+            return amount - applied;
         }
 
         private float Draw(EnergyBus bus, float amount)
@@ -175,7 +182,8 @@ namespace BeyondSpiderAssembly
         public readonly List<ShieldProjectorBlock> Shields = new List<ShieldProjectorBlock>();
         public readonly List<CiwsBlock> Ciws = new List<CiwsBlock>();
         public readonly List<SpaceFlakTurretBlock> FlakTurrets = new List<SpaceFlakTurretBlock>();
-        public readonly List<SpaceGunBlock> Guns = new List<SpaceGunBlock>();
+        public readonly List<RailgunBarrelBlock> Guns = new List<RailgunBarrelBlock>();
+        public readonly List<NanoArmorBehaviour> Armor = new List<NanoArmorBehaviour>();
         public readonly List<SpaceInterceptorLauncherBlock> Launchers = new List<SpaceInterceptorLauncherBlock>();
         public readonly List<SpaceGunnerBlock> Gunners = new List<SpaceGunnerBlock>();
         public readonly List<SensorTrack> Tracks = new List<SensorTrack>();
@@ -312,6 +320,7 @@ namespace BeyondSpiderAssembly
                 + FormatBus(ship, EnergyBus.Weapon) + " / "
                 + FormatBus(ship, EnergyBus.Universal));
             GUILayout.Label("Tracks: " + ship.Tracks.Count + "  CIWS: " + ship.Ciws.Count + "  Shields: " + ship.Shields.Count);
+            GUILayout.Label("Armor blocks: " + ship.Armor.Count + "  " + FormatArmor(ship));
             if (ship.DefensiveSolution.Target != null)
             {
                 GUILayout.Label("Defense target: " + ship.DefensiveSolution.Target.Kind + "  TTI "
@@ -327,6 +336,30 @@ namespace BeyondSpiderAssembly
         private static string FormatBus(ShipState ship, EnergyBus bus)
         {
             return (ship.Energy.ChargeLevel(bus) * 100f).ToString("0") + "%";
+        }
+
+        private static string FormatArmor(ShipState ship)
+        {
+            if (ship.Armor.Count == 0)
+            {
+                return "Integrity n/a";
+            }
+
+            float integritySum = 0f;
+            float structuralSum = 0f;
+            for (int i = 0; i < ship.Armor.Count; i++)
+            {
+                NanoArmorBehaviour armor = ship.Armor[i];
+                if (armor == null)
+                {
+                    continue;
+                }
+                integritySum += armor.Integrity;
+                structuralSum += armor.StructuralValue;
+            }
+
+            float count = Mathf.Max(1, ship.Armor.Count);
+            return "Integrity " + (integritySum / count * 100f).ToString("0") + "%  Structural " + (structuralSum / count * 100f).ToString("0") + "%";
         }
     }
 }
