@@ -41,7 +41,9 @@ The main implementation rule should be: blocks register capability, managers agg
 
 **护盾发生器 / ShieldProjector**
 
-- Creates a configurable paraboloid electromagnetic field.
+- Creates a configurable paraboloid electromagnetic field: narrow at the projector, flaring out to a build-configured aperture radius over a build-configured depth along the block's facing direction.
+- Has no IFF — every eligible high-speed projectile inside the field is slowed, including the owning ship's own kinetic rounds and missiles.
+- Maintaining the field costs standing shield energy on its own (scaling with field volume), on top of the extra per-target energy spent while actively decelerating something; both draws degrade the field's effectiveness gracefully with available power rather than switching it off.
 - Consumes shield energy when an eligible physical projectile intersects the field.
 - Can fully intercept, partially slow, or fail based on projectile speed, mass/caliber, shield allocation, and available capacitor power.
 - Does not affect laser beams.
@@ -204,7 +206,7 @@ Use a simple first version:
 
 **Shield vs kinetic**
 
-- Eligible: railgun slugs, large shells, missiles.
+- Eligible: railgun slugs, large shells, missiles — from any team, including the shield's own ship. The field has no IFF filtering.
 - Ineligible: laser beams.
 - Cost should scale with kinetic threat, roughly `mass * speed^2`, with tuning caps.
 - Fast objects are more expensive but more strongly affected by the electromagnetic field; slow heavy missiles can slip through if not physically destroyed.
