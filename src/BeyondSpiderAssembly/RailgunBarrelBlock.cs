@@ -14,6 +14,7 @@ namespace BeyondSpiderAssembly
 
         private const float ReloadIconSize = 50f;
         private const float ReloadIconWorldOffset = 0f;
+        private const float ProjectileVisualScale = 3f;
 
         private float reloadTime;
         private float reload;
@@ -85,9 +86,13 @@ namespace BeyondSpiderAssembly
             float energyPerShot = 40f + massFactor * MuzzleVelocity.Value * MuzzleVelocity.Value * 0.00035f;
 
             ShipState ship = OwnShip();
-            if (ship != null && ship.Energy.Request(EnergyBus.Weapon, energyPerShot) < 0.25f)
+            if (ship != null)
             {
-                return false;
+                if (!ship.Energy.CanSupply(EnergyBus.Weapon, energyPerShot))
+                {
+                    return false;
+                }
+                ship.Energy.Request(EnergyBus.Weapon, energyPerShot);
             }
 
             reload = 0f;
@@ -95,6 +100,7 @@ namespace BeyondSpiderAssembly
 
             GameObject round = new GameObject("BeyondSpider Railgun Slug");
             round.transform.position = transform.position + transform.forward * 1.2f;
+            round.transform.rotation = Quaternion.LookRotation(direction.normalized, transform.up);
             Rigidbody rb = round.AddComponent<Rigidbody>();
             rb.interpolation = RigidbodyInterpolation.Extrapolate;
             rb.mass = Mathf.Max(0.05f, massFactor);
@@ -106,7 +112,7 @@ namespace BeyondSpiderAssembly
             vis.transform.SetParent(round.transform);
             vis.transform.localPosition = Vector3.zero;
             vis.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
-            vis.transform.localScale = Vector3.one * Caliber.Value / 500f;
+            vis.transform.localScale = Vector3.one * Caliber.Value / 500f * ProjectileVisualScale;
             MeshFilter meshFilter = vis.AddComponent<MeshFilter>();
             meshFilter.sharedMesh = ModResource.GetMesh("Cannon Mesh").Mesh;
             MeshRenderer meshRenderer = vis.AddComponent<MeshRenderer>();
@@ -119,8 +125,10 @@ namespace BeyondSpiderAssembly
             projectile.Lifetime = Mathf.Clamp(life + 2f, 2f, 12f);
             projectile.MassEstimate = rb.mass;
             projectile.Caliber = Caliber.Value;
+            projectile.RadiusValue = Mathf.Clamp(Caliber.Value / 100f * ProjectileVisualScale, 1.2f, 7.5f);
             projectile.SpawnImpactSpark = true;
             projectile.UseRaycastDetection = true;
+            SpaceEffectAssets.AttachRailgunTailGlow(round.transform, rb, Caliber.Value, MuzzleVelocity.Value);
 
             SpaceEffectAssets.PlayMuzzleSound(transform, Caliber.Value);
 

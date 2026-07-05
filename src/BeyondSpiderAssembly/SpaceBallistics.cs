@@ -54,6 +54,8 @@ namespace BeyondSpiderAssembly
     {
         private static GameObject pierceEffectPrefab;
         private static bool pierceLoadAttempted;
+        private static GameObject cannonLightPrefab;
+        private static bool cannonLightLoadAttempted;
 
         private static GameObject PierceEffectPrefab
         {
@@ -65,6 +67,19 @@ namespace BeyondSpiderAssembly
                     pierceEffectPrefab = ModResource.GetAssetBundle("space-perice").LoadAsset<GameObject>("Perice");
                 }
                 return pierceEffectPrefab;
+            }
+        }
+
+        private static GameObject CannonLightPrefab
+        {
+            get
+            {
+                if (cannonLightPrefab == null && !cannonLightLoadAttempted)
+                {
+                    cannonLightLoadAttempted = true;
+                    cannonLightPrefab = ModResource.GetAssetBundle("space-gunsmoke").LoadAsset<GameObject>("CannonLight");
+                }
+                return cannonLightPrefab;
             }
         }
 
@@ -101,6 +116,135 @@ namespace BeyondSpiderAssembly
             audioSource.maxDistance = 500f;
             audioSource.Play();
             Object.Destroy(sound, 3f);
+        }
+
+        public static void AttachRailgunTailGlow(Transform round, Rigidbody body, float caliber, float maxSpeed)
+        {
+            if (round == null || body == null)
+            {
+                return;
+            }
+
+            GameObject glow = new GameObject("Railgun Velocity Tail Glow");
+            glow.transform.SetParent(round);
+            glow.transform.localPosition = new Vector3(0f, 0f, -Mathf.Max(0.15f, caliber / 220f));
+            glow.transform.localRotation = Quaternion.identity;
+            glow.transform.localScale = Vector3.one;
+
+            GameObject prefab = CannonLightPrefab;
+            if (prefab != null)
+            {
+                GameObject cannonLight = (GameObject)Object.Instantiate(prefab);
+                cannonLight.transform.SetParent(glow.transform);
+                cannonLight.transform.localPosition = Vector3.zero;
+                cannonLight.transform.localRotation = Quaternion.identity;
+                cannonLight.transform.localScale = Vector3.one * Mathf.Clamp(caliber / 120f, 0.6f, 3.5f);
+            }
+
+            RailgunTailGlow tailGlow = glow.AddComponent<RailgunTailGlow>();
+            tailGlow.Body = body;
+            tailGlow.Caliber = caliber;
+            tailGlow.MaxSpeed = maxSpeed;
+        }
+    }
+
+    public class RailgunTailGlow : MonoBehaviour
+    {
+        public Rigidbody Body;
+        public float Caliber;
+        public float MaxSpeed;
+
+        private ParticleSystem particles;
+        private Light pointLight;
+        private ParticleSystem[] childParticles;
+        private Light[] childLights;
+
+        private void Awake()
+        {
+            particles = gameObject.AddComponent<ParticleSystem>();
+            particles.playOnAwake = true;
+            particles.loop = true;
+            particles.gravityModifier = 0f;
+            particles.startLifetime = 0.16f;
+            particles.startSpeed = 0.25f;
+            particles.startSize = Mathf.Clamp(Caliber / 160f, 0.25f, 2.8f);
+            particles.simulationSpace = ParticleSystemSimulationSpace.World;
+
+            ParticleSystem.EmissionModule emission = particles.emission;
+            emission.rate = Mathf.Clamp(Caliber * 0.75f, 45f, 180f);
+
+            ParticleSystemRenderer renderer = gameObject.GetComponent<ParticleSystemRenderer>();
+            if (renderer != null)
+            {
+                renderer.material = new Material(Shader.Find("Particles/Additive"));
+            }
+
+            pointLight = gameObject.AddComponent<Light>();
+            pointLight.type = LightType.Point;
+            pointLight.range = Mathf.Clamp(Caliber / 20f, 4f, 18f);
+            pointLight.intensity = 1.4f;
+
+            childParticles = GetComponentsInChildren<ParticleSystem>();
+            childLights = GetComponentsInChildren<Light>();
+        }
+
+        private void FixedUpdate()
+        {
+            if (Body == null)
+            {
+                Destroy(gameObject);
+                return;
+            }
+
+            float speed = Body.velocity.magnitude;
+            if (speed > 0.1f && transform.parent != null)
+            {
+                transform.parent.rotation = Quaternion.LookRotation(Body.velocity.normalized);
+            }
+
+            Color color = VelocityColor(speed);
+            if (childParticles != null)
+            {
+                float size = Mathf.Clamp(Caliber / 160f, 0.25f, 2.8f) * Mathf.Lerp(0.75f, 1.4f, SpeedRatio(speed));
+                for (int i = 0; i < childParticles.Length; i++)
+                {
+                    if (childParticles[i] == null)
+                    {
+                        continue;
+                    }
+                    childParticles[i].startColor = color;
+                    childParticles[i].startSize = size;
+                }
+            }
+            if (childLights != null)
+            {
+                for (int i = 0; i < childLights.Length; i++)
+                {
+                    if (childLights[i] == null)
+                    {
+                        continue;
+                    }
+                    childLights[i].color = color;
+                    childLights[i].intensity = Mathf.Lerp(0.7f, 2.2f, SpeedRatio(speed));
+                    childLights[i].range = Mathf.Clamp(Caliber / 20f, 4f, 18f);
+                }
+            }
+        }
+
+        private Color VelocityColor(float speed)
+        {
+            float ratio = SpeedRatio(speed);
+            Color slow = new Color(1f, 0.32f, 0.06f, 0.85f);
+            Color mid = new Color(0.95f, 0.95f, 0.25f, 0.95f);
+            Color fast = new Color(0.18f, 0.86f, 1f, 1f);
+            return ratio < 0.5f
+                ? Color.Lerp(slow, mid, ratio * 2f)
+                : Color.Lerp(mid, fast, (ratio - 0.5f) * 2f);
+        }
+
+        private float SpeedRatio(float speed)
+        {
+            return Mathf.InverseLerp(900f, Mathf.Max(1200f, MaxSpeed), speed);
         }
     }
 

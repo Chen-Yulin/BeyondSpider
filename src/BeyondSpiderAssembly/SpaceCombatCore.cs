@@ -134,6 +134,22 @@ namespace BeyondSpiderAssembly
             return Mathf.Clamp01(supplied / amount);
         }
 
+        public bool CanSupply(EnergyBus bus, float amount)
+        {
+            amount = Mathf.Max(0f, amount);
+            if (amount <= 0f)
+            {
+                return true;
+            }
+
+            float available = capacitor[(int)bus];
+            if (bus != EnergyBus.Universal)
+            {
+                available += capacitor[(int)EnergyBus.Universal];
+            }
+            return available >= amount;
+        }
+
         public float ChargeLevel(EnergyBus bus)
         {
             int index = (int)bus;
