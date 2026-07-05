@@ -130,7 +130,7 @@ namespace BeyondSpiderAssembly
         private bool Contains(Vector3 position)
         {
             Vector3 delta = position - transform.position;
-            float a = Vector3.Dot(delta, transform.forward);
+            float a = Vector3.Dot(delta, -transform.forward);
             if (a < 0f || a > Depth.Value)
             {
                 return false;
@@ -166,7 +166,9 @@ namespace BeyondSpiderAssembly
             visObject = new GameObject("BS Shield Field Vis");
             visObject.transform.SetParent(transform);
             visObject.transform.localPosition = Vector3.zero;
-            visObject.transform.localRotation = Quaternion.identity;
+            // Mesh is generated along local +Z (see RebuildMesh); rotate 180° so it points along
+            // -transform.forward in world space, matching Contains's flipped axis above.
+            visObject.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
             visObject.transform.localScale = Vector3.one;
             visMeshFilter = visObject.AddComponent<MeshFilter>();
             visRenderer = visObject.AddComponent<MeshRenderer>();
@@ -255,7 +257,10 @@ namespace BeyondSpiderAssembly
             float baseAlpha = AlwaysVisible.IsActive ? BaseAlpha * lastUpkeepRatio : 0f;
             float intensity = Mathf.Clamp01(baseAlpha + FlashPeakAlpha * flashLevel);
             Color hueColor = Color.HSVToRGB(ColorHue.Value, 1f, 1f);
-            visRenderer.material.color = hueColor * intensity;
+            // Particles/Additive reads _TintColor (not the standard _Color that .material.color sets);
+            // leaving _TintColor at the shader's own default (0.5,0.5,0.5,0.5) is what rendered solid
+            // opaque white regardless of intensity/hue — set it directly instead.
+            visRenderer.material.SetColor("_TintColor", hueColor * intensity);
             visRenderer.enabled = intensity > 0.001f;
         }
     }

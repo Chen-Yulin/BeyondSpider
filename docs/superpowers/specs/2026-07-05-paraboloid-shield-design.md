@@ -17,12 +17,12 @@
 
 ### 1. Shape and orientation
 
-Vertex at the block's position, axis = `transform.forward` (same convention `RadarPanelBlock` already uses for its cone, so the player's build-mode orientation of the block decides which arc is protected).
+Vertex at the block's position, axis = `-transform.forward` (flipped from an initial `transform.forward` after in-game testing showed the field opened backward through the block; the player's build-mode orientation of the block still decides which arc is protected, just mirrored from the block's nominal forward face).
 
 For a candidate target position `P`:
 ```
 delta = P - origin
-a = Dot(delta, forward)          // axial distance from the vertex
+a = Dot(delta, -forward)         // axial distance from the vertex
 r2 = delta.sqrMagnitude - a*a    // squared perpendicular distance from the axis
 ```
 Contained iff `0 <= a <= Depth.Value` and `r2 <= Radius.Value * Radius.Value * a / Depth.Value`.
@@ -68,7 +68,7 @@ New build-mode controls on `ShieldProjectorBlock`:
 
 On `OnSimulateStart`, a child `GameObject` ("BS Shield Field Vis") is created with a `MeshFilter`/`MeshRenderer` using a new `Material(Shader.Find("Particles/Additive"))` (same shader family `SpaceFlakTurretBlock` already uses for its glow effects — additive blending means visibility is controlled by scaling the color's brightness, not the alpha channel, which is what the flash/dim behavior below relies on). Destroyed in `OnSimulateStop`.
 
-**Mesh**: a polar grid (`RingCount = 10` rings × `SegmentCount = 32` segments) built directly from the same formula as the containment test — ring `j`'s axial position is `aj = Depth.Value * j / RingCount`, its radius is `rj = Radius.Value * Sqrt(aj / Depth.Value)`, vertices are `(rj*cos θ, rj*sin θ, aj)` in the child's local space (identity local rotation, so local +Z lines up with the parent's `transform.forward`, matching the containment axis). Triangles connect adjacent rings; each quad is emitted with both winding orders so the dish is visible from either side without depending on shader cull state. The mesh is only rebuilt when `Radius.Value`/`Depth.Value` differ from the last-built values by more than 0.01, checked once per tick (cheap comparison, rare rebuild).
+**Mesh**: a polar grid (`RingCount = 10` rings × `SegmentCount = 32` segments) built directly from the same formula as the containment test — ring `j`'s axial position is `aj = Depth.Value * j / RingCount`, its radius is `rj = Radius.Value * Sqrt(aj / Depth.Value)`, vertices are `(rj*cos θ, rj*sin θ, aj)` in the child's local space. The child's local rotation is `Euler(0, 180, 0)` (not identity — in-game testing showed the field's actual axis is `-transform.forward`, so the child is turned to match: its local +Z, where the mesh is generated, now points along that same `-transform.forward` axis). Triangles connect adjacent rings; each quad is emitted with both winding orders so the dish is visible from either side without depending on shader cull state. The mesh is only rebuilt when `Radius.Value`/`Depth.Value` differ from the last-built values by more than 0.01, checked once per tick (cheap comparison, rare rebuild).
 
 **Brightness**: 
 ```
@@ -76,9 +76,10 @@ baseAlpha  = AlwaysVisible.IsActive ? BaseAlpha * upkeepRatio : 0f     // BaseAl
 flashLevel = max(0, flashLevel - Time.fixedDeltaTime / FlashDecayTime) // FlashDecayTime = 0.25
 if (any target had appliedDeltaV > 0 this tick) flashLevel = 1f
 intensity  = Clamp01(baseAlpha + FlashPeakAlpha * flashLevel)          // FlashPeakAlpha = 0.35
-renderer.material.color = hueColor * intensity
+renderer.material.SetColor("_TintColor", hueColor * intensity)
 renderer.enabled = intensity > 0.001f
 ```
+The Unity built-in `Particles/Additive` shader reads its tint from the `_TintColor` property, not the generic `_Color` that `Material.color` sets — an initial version set `.color` and, in-game, rendered as solid opaque white regardless of hue/intensity, because `_TintColor` was left at the shader's own default (`(0.5,0.5,0.5,0.5)`) and its additive `2 × color` math turns that into full-brightness white. Setting `_TintColor` directly fixed it.
 `BaseAlpha`, `FlashPeakAlpha`, `FlashDecayTime` are code constants (deliberately not sliders, per instruction — "brightness doesn't need to be high, keep it code-tunable"). This gives exactly the two requested behaviors from one shared code path: with "Always Show Shield" on, the dish is a dim, constantly-visible film whose dimness already reflects upkeep starvation; with it off, the dish is invisible except for a brief pulse at the instant it actually brakes something, whether or not the toggle is on.
 
 ## Data flow summary
