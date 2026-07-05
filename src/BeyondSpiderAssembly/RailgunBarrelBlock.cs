@@ -12,6 +12,9 @@ namespace BeyondSpiderAssembly
         public MSlider Caliber;
         public MSlider MuzzleVelocity;
 
+        private const float ReloadIconSize = 50f;
+        private const float ReloadIconWorldOffset = 0f;
+
         private float reloadTime;
         private float reload;
 
@@ -126,6 +129,36 @@ namespace BeyondSpiderAssembly
                 Body.AddForce(-direction.normalized * (Caliber.Value / 100f) * (MuzzleVelocity.Value / 500f) * 6f, ForceMode.Impulse);
             }
             return true;
+        }
+
+        private void OnGUI()
+        {
+            if (StatMaster.hudHidden || !BlockBehaviour.isSimulating)
+            {
+                return;
+            }
+
+            Camera camera = Camera.main;
+            if (camera == null)
+            {
+                return;
+            }
+
+            Vector3 screen = camera.WorldToScreenPoint(transform.position + transform.up * ReloadIconWorldOffset);
+            if (screen.z <= 0f)
+            {
+                return;
+            }
+
+            Texture outCircle = ModResource.GetTexture("BS Migrated Gun Load Circle Out Texture").Texture;
+            Texture inCircle = ModResource.GetTexture("BS Migrated Gun Load Circle In Texture").Texture;
+            float progress = Mathf.Clamp01(reload / Mathf.Max(0.001f, reloadTime));
+            float inSize = ReloadIconSize * progress;
+            float x = screen.x - ReloadIconSize * 0.5f;
+            float y = camera.pixelHeight - screen.y - ReloadIconSize * 0.5f;
+
+            GUI.DrawTexture(new Rect(x, y, ReloadIconSize, ReloadIconSize), outCircle);
+            GUI.DrawTexture(new Rect(screen.x - inSize * 0.5f, camera.pixelHeight - screen.y - inSize * 0.5f, inSize, inSize), inCircle);
         }
     }
 

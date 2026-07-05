@@ -59,19 +59,19 @@ namespace BeyondSpiderAssembly
     {
         private readonly float[] capacitor = new float[4];
         private readonly float[] capacity = new float[4];
+        private readonly float[] previousCapacity = new float[4];
         private readonly float[] reactorShare = new float[4];
         private readonly float[] spentThisSecond = new float[4];
-        private readonly bool[] capacitorInitialized = new bool[4];
 
         public float ReactorOutput;
 
-        public void Configure(float totalOutput, float armorShare, float shieldShare, float weaponShare)
+        public void Configure(float totalPower, float armorPowerShare, float shieldPowerShare, float weaponPowerShare)
         {
-            ReactorOutput = Mathf.Max(0f, totalOutput);
-            float sum = Mathf.Max(0.001f, armorShare + shieldShare + weaponShare);
-            reactorShare[(int)EnergyBus.Armor] = armorShare / sum;
-            reactorShare[(int)EnergyBus.Shield] = shieldShare / sum;
-            reactorShare[(int)EnergyBus.Weapon] = weaponShare / sum;
+            ReactorOutput = Mathf.Max(0f, totalPower);
+            float sum = Mathf.Max(0.001f, armorPowerShare + shieldPowerShare + weaponPowerShare);
+            reactorShare[(int)EnergyBus.Armor] = armorPowerShare / sum;
+            reactorShare[(int)EnergyBus.Shield] = shieldPowerShare / sum;
+            reactorShare[(int)EnergyBus.Weapon] = weaponPowerShare / sum;
             reactorShare[(int)EnergyBus.Universal] = 0f;
         }
 
@@ -79,6 +79,7 @@ namespace BeyondSpiderAssembly
         {
             for (int i = 0; i < capacitor.Length; i++)
             {
+                previousCapacity[i] = capacity[i];
                 capacity[i] = 0f;
             }
         }
@@ -86,13 +87,14 @@ namespace BeyondSpiderAssembly
         public void AddCapacity(EnergyBus bus, float amount)
         {
             int index = (int)bus;
-            capacity[index] += Mathf.Max(0f, amount);
-            if (!capacitorInitialized[index])
+            amount = Mathf.Max(0f, amount);
+            float newCapacity = capacity[index] + amount;
+            float knownCapacity = Mathf.Max(previousCapacity[index], capacity[index]);
+            if (newCapacity > knownCapacity)
             {
-                capacitor[index] = capacity[index] * 0.5f;
-                capacitorInitialized[index] = true;
+                capacitor[index] += (newCapacity - knownCapacity) * 0.5f;
             }
-            capacitor[index] = Mathf.Min(capacity[index], capacitor[index]);
+            capacity[index] = newCapacity;
         }
 
         public void Tick(float deltaTime)
@@ -313,7 +315,10 @@ namespace BeyondSpiderAssembly
             GUILayout.BeginArea(window, "BeyondSpider Space Combat", GUI.skin.window);
             GUILayout.Label("Core: " + ship.Core.DisplayName);
             GUILayout.Label("Captain priority: " + ship.Priority);
-            GUILayout.Label("Energy MW: " + ship.Energy.ReactorOutput.ToString("0"));
+            GUILayout.Label("Total power MW: " + ship.Energy.ReactorOutput.ToString("0"));
+            GUILayout.Label("Power share A/S/W: " + FormatPowerShare(ship, EnergyBus.Armor)
+                + " / " + FormatPowerShare(ship, EnergyBus.Shield)
+                + " / " + FormatPowerShare(ship, EnergyBus.Weapon));
             GUILayout.Label("Cap A/S/W/U: "
                 + FormatBus(ship, EnergyBus.Armor) + " / "
                 + FormatBus(ship, EnergyBus.Shield) + " / "
@@ -336,6 +341,31 @@ namespace BeyondSpiderAssembly
         private static string FormatBus(ShipState ship, EnergyBus bus)
         {
             return (ship.Energy.ChargeLevel(bus) * 100f).ToString("0") + "%";
+        }
+
+        private static string FormatPowerShare(ShipState ship, EnergyBus bus)
+        {
+            if (ship.Core == null)
+            {
+                return "0%";
+            }
+
+            float armor = ship.Core.ArmorPowerShare.Value;
+            float shield = ship.Core.ShieldPowerShare.Value;
+            float weapon = ship.Core.WeaponPowerShare.Value;
+            float total = Mathf.Max(0.001f, armor + shield + weapon);
+
+            switch (bus)
+            {
+                case EnergyBus.Armor:
+                    return (armor / total * 100f).ToString("0") + "%";
+                case EnergyBus.Shield:
+                    return (shield / total * 100f).ToString("0") + "%";
+                case EnergyBus.Weapon:
+                    return (weapon / total * 100f).ToString("0") + "%";
+                default:
+                    return "0%";
+            }
         }
 
         private static string FormatArmor(ShipState ship)

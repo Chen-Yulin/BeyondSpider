@@ -4,10 +4,10 @@ namespace BeyondSpiderAssembly
 {
     public class SpaceShipCore : SpaceBlock, ITrackable
     {
-        public MSlider TotalEnergy;
-        public MSlider ArmorShare;
-        public MSlider ShieldShare;
-        public MSlider WeaponShare;
+        public MSlider TotalPower;
+        public MSlider ArmorPowerShare;
+        public MSlider ShieldPowerShare;
+        public MSlider WeaponPowerShare;
         public MToggle ShowArmorHP;
 
         public string DisplayName;
@@ -22,10 +22,10 @@ namespace BeyondSpiderAssembly
         {
             base.SafeAwake();
             gameObject.name = "BeyondSpider Ship Core";
-            TotalEnergy = AddSlider("Total Energy", "BSTotalEnergy", 1200f, 200f, 8000f);
-            ArmorShare = AddSlider("Armor Share", "BSArmorShare", 1f, 0f, 5f);
-            ShieldShare = AddSlider("Shield Share", "BSShieldShare", 2f, 0f, 5f);
-            WeaponShare = AddSlider("Weapon Share", "BSWeaponShare", 2f, 0f, 5f);
+            TotalPower = AddSlider("Total Power", "BSTotalEnergy", 1200f, 200f, 8000f);
+            ArmorPowerShare = AddSlider("Armor Power Share", "BSArmorShare", 1f, 0f, 5f);
+            ShieldPowerShare = AddSlider("Shield Power Share", "BSShieldShare", 2f, 0f, 5f);
+            WeaponPowerShare = AddSlider("Weapon Power Share", "BSWeaponShare", 2f, 0f, 5f);
             ShowArmorHP = AddToggle("Show Armor HP", "BSShowArmorHP", false);
         }
 
@@ -44,7 +44,7 @@ namespace BeyondSpiderAssembly
 
         public void ConfigureEnergy(EnergyGrid grid)
         {
-            grid.Configure(TotalEnergy.Value, ArmorShare.Value, ShieldShare.Value, WeaponShare.Value);
+            grid.Configure(TotalPower.Value, ArmorPowerShare.Value, ShieldPowerShare.Value, WeaponPowerShare.Value);
         }
 
         private void ApplyReactorMass()
@@ -53,7 +53,7 @@ namespace BeyondSpiderAssembly
             {
                 return;
             }
-            Body.mass = Mathf.Max(0.3f, 0.3f + Mathf.Pow(TotalEnergy.Value / 1000f, 1.25f) * 0.8f);
+            Body.mass = Mathf.Max(0.3f, 0.3f + Mathf.Pow(TotalPower.Value / 1000f, 1.25f) * 0.8f);
         }
     }
 }

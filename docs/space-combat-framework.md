@@ -4,7 +4,7 @@ This design is based on `策划案.md`, with implementation patterns borrowed fr
 
 ## Design Goal
 
-Build space combat as a capital-ship systems game rather than a pile of independent weapons. A ship has one core identity, a finite energy budget, sensor tracks, directors that turn tracks into firing solutions, and weapons/defenses that consume those outputs.
+Build space combat as a capital-ship systems game rather than a pile of independent weapons. A ship has one core identity, a finite total-power output, sensor tracks, directors that turn tracks into firing solutions, and weapons/defenses that consume those outputs.
 
 The main implementation rule should be: blocks register capability, managers aggregate state, directors calculate decisions, and weapons execute.
 
@@ -14,8 +14,8 @@ The main implementation rule should be: blocks register capability, managers agg
 
 - Replaces the WW2 naval `Controller` role as the ship identity and command anchor.
 - Defines ship-local coordinate frame, ship center, approximate volume, team/player ownership, and radar lock point.
-- Exposes build sliders for total energy budget and split across nano armor, shield, and weapons.
-- Applies reactor mass/power penalty so bigger budget means heavier ship.
+- Exposes build sliders for total power output and power share ratios across nano armor, shield, and weapons.
+- Applies reactor mass/power penalty so bigger output means heavier ship.
 - Hosts or opens the 3D radar/command UI, derived from WW2 naval captain UI and MAC radar display concepts.
 
 **超级电容 / SuperCapacitor**
@@ -163,7 +163,7 @@ The main implementation rule should be: blocks register capability, managers agg
 
 **Build mode**
 
-1. ShipCore updates ship origin, rough size, and energy allocation.
+1. ShipCore updates ship origin, rough size, total transmitted power, and power share ratios.
 2. SuperCapacitors register capacity by bus.
 3. RadarPanels, ShieldProjectors, weapons, barrels, launchers, and gunners register to the nearest/own ShipCore by player and machine.
 4. Weapon groups are configured with text/menu fields like WW2 `Gunner.GunGroup`.
@@ -190,8 +190,9 @@ The main implementation rule should be: blocks register capability, managers agg
 
 Use a simple first version:
 
-- Reactor output per second comes from ShipCore total energy budget.
-- Reactor mass scales superlinearly with output, for example `mass = base + k * pow(totalBudget, 1.25)`.
+- Reactor output per second comes from ShipCore total power.
+- Armor/Shield/Weapon share sliders are relative power charging/supply ratios; `1/2/2` means Armor receives 20%, Shield 40%, and Weapon 40% of core output.
+- Reactor mass scales superlinearly with output, for example `mass = base + k * pow(totalPower, 1.25)`.
 - SuperCapacitor capacity scales with part size and mass.
 - Consumers first draw from matching capacitors, then universal capacitors, then reactor remainder.
 - If a consumer receives partial energy, apply nonlinear degradation:
@@ -233,7 +234,7 @@ Use a simple first version:
 **Phase 2: Ship identity and energy**
 
 - Implement ShipCore, SuperCapacitor, and EnergyGrid.
-- Show debug HUD values for reactor output, capacitor charge, and bus draw.
+- Show debug HUD values for total power, power share ratios, capacitor charge, and bus draw.
 - Apply reactor/capacitor mass changes.
 
 **Phase 3: sensors and tracks**
@@ -268,7 +269,7 @@ Two validation slices exist for this framework. Build whichever is marked curren
 
 **Current priority: Energy-Firepower-Armor slice**
 
-Build ShipCore, EnergyGrid, SuperCapacitor, one weapon (`RailgunBarrelBlock` or `SpaceFlakTurretBlock`), and nano armor on a target hull section. This validates energy budget allocation across buses, weapon energy draw and degrade-under-low-power behavior, and armor integrity loss/repair against incoming fire. `RailgunBarrelBlock`/`SpaceFlakTurretBlock` already draw from the Weapon bus, and nano armor/`DamageRouter` are now implemented (`NanoArmorBlock.cs`, `DamageRouter.cs`) — the energy-firepower-armor loop is closed end to end. Radar/defense systems are not required for this slice.
+Build ShipCore, EnergyGrid, SuperCapacitor, one weapon (`RailgunBarrelBlock` or `SpaceFlakTurretBlock`), and nano armor on a target hull section. This validates total power and power-share ratios across buses, weapon energy draw and degrade-under-low-power behavior, and armor integrity loss/repair against incoming fire. `RailgunBarrelBlock`/`SpaceFlakTurretBlock` already draw from the Weapon bus, and nano armor/`DamageRouter` are now implemented (`NanoArmorBlock.cs`, `DamageRouter.cs`) — the energy-firepower-armor loop is closed end to end. Radar/defense systems are not required for this slice.
 
 **Secondary priority: Missile-Defense slice**
 

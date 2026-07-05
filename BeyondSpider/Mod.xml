@@ -215,6 +215,8 @@ First playable space-combat slice: ship core, energy grid, capacitors, radar tra
 		<Texture name="AA-IJN-127-2 Texture" path="WW2Migrated\AA\JP 127\127 2.png"/>
 		<Mesh name="BS Migrated Gun Mesh" path="WW2Migrated\Gun\Gun.obj"/>
 		<Texture name="BS Migrated Gun Texture" path="WW2Migrated\Gun\Gun.png"/>
+		<Texture name="BS Migrated Gun Load Circle In Texture" path="WW2Migrated\Gun\loadCircleIn.png"/>
+		<Texture name="BS Migrated Gun Load Circle Out Texture" path="WW2Migrated\Gun\loadCircleOut.png"/>
 		<Mesh name="BS Migrated Cannon Mesh" path="WW2Migrated\Gun\Cannon.obj"/>
 		<Texture name="BS Migrated Cannon Texture" path="WW2Migrated\Gun\Cannon.png"/>
 		<Mesh name="Cannon Mesh" path="WW2Migrated\Gun\Cannon.obj"/>
