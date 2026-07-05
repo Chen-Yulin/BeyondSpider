@@ -149,7 +149,7 @@ Besiege 的机器可能有很多零件，太空战斗还会有远距离和高速
 1. ~~实现纳米装甲 Block/行为~~ 已完成：`NanoArmorBehaviour` 挂在原版木头零件上，`Integrity`/`StructuralValue` 两段血量，`ratio^2` 非线性自修复。
 2. ~~实现 DamageRouter~~ 已完成：`DamageRouter.RoutePhysicalHit` 是统一入口。
 3. ~~让炮的命中结果影响装甲 integrity~~ 已完成：`RailgunBarrelBlock`/`SpaceFlakTurretBlock` 经 `SpaceKineticRound.OnCollisionEnter` 打到 `DamageRouter`；`HeavyNuclearMissileBlock` 爆炸按距离打到附近所有装甲。
-4. ~~打通 HUD 显示~~ 已完成：`SpaceCombatRuntime.OnGUI` 显示装甲零件数和平均 Integrity/Structural 百分比；`SpaceShipCore.ShowArmorHP` 控制场景内的绿/红半透明可视化。
+4. ~~打通 HUD 显示~~ 已完成：`SpaceCombatRuntime.OnGUI` 显示装甲零件数和平均 Integrity/Structural 百分比；同一窗口内的 `Show Armor HP` 勾选框（`SpaceCombatRuntime.ShowArmorHP`，全局静态，仿照 WW2-Naval `ModController` 的 `ShowArmour`/`ShowCrew` 勾选框，而不是挂在某个 Block 上）控制场景内的绿/红半透明可视化。
 5. 补一个最小验证场景（一门炮 + 一段纳米装甲 + 能量预算），手动改变能量分配验证伤害/削弱是否符合"功率不够时系统变差"的设计味道——仍待手动在 Besiege 里搭建验证，不是代码任务。
 6. 结构断裂之后的后续效果（零件真的飞出去之后怎么处理、是否需要额外的连锁反应）、激光炮管与 `LaserDamageMultiplier` 的实际对接，留给后续。
 

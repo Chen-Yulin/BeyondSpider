@@ -64,6 +64,7 @@ namespace BeyondSpiderAssembly
         private const float EnergyPerRepairPoint = 4f;
         private const float HealthyJointForce = 45000f;
         private const float MaxOverlayAlpha = 0.6f;
+        private const float MinRepairSpeedFactor = 0.15f;
 
         public float Integrity = 1f;
         public float StructuralValue = 1f;
@@ -122,7 +123,8 @@ namespace BeyondSpiderAssembly
             bool hostAuthoritative = !StatMaster.isMP || !StatMaster.isClient;
             if (hostAuthoritative && ship != null && Integrity < 1f)
             {
-                float wantedRepair = RepairRatePerSecond * Time.fixedDeltaTime;
+                float integrityFactor = Mathf.Lerp(MinRepairSpeedFactor, 1f, Integrity);
+                float wantedRepair = RepairRatePerSecond * integrityFactor * Time.fixedDeltaTime;
                 float energyNeeded = wantedRepair * IntegrityPool * EnergyPerRepairPoint;
                 float ratio = ship.Energy.Request(EnergyBus.Armor, energyNeeded);
                 Integrity = Mathf.Clamp01(Integrity + wantedRepair * ratio * ratio);
@@ -137,10 +139,18 @@ namespace BeyondSpiderAssembly
             {
                 return;
             }
+
             if (Integrity > 0f)
             {
-                Integrity = Mathf.Clamp01(Integrity - damage / IntegrityPool);
-                return;
+                float integrityCapacity = Integrity * IntegrityPool;
+                if (damage <= integrityCapacity)
+                {
+                    Integrity -= damage / IntegrityPool;
+                    return;
+                }
+
+                damage -= integrityCapacity;
+                Integrity = 0f;
             }
 
             StructuralValue = Mathf.Clamp01(StructuralValue - damage / StructuralPool);
@@ -250,7 +260,7 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
-            bool show = ship != null && ship.Core != null && ship.Core.ShowArmorHP.IsActive;
+            bool show = SpaceCombatRuntime.ShowArmorHP;
             overlay.SetActive(show);
             if (normalVis != null)
             {

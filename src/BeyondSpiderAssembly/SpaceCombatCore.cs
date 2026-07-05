@@ -272,6 +272,8 @@ namespace BeyondSpiderAssembly
 
     public sealed class SpaceCombatRuntime : MonoBehaviour
     {
+        public static bool ShowArmorHP;
+
         private readonly Rect window = new Rect(14f, 80f, 330f, 420f);
 
         private void FixedUpdate()
@@ -326,6 +328,7 @@ namespace BeyondSpiderAssembly
                 + FormatBus(ship, EnergyBus.Universal));
             GUILayout.Label("Tracks: " + ship.Tracks.Count + "  CIWS: " + ship.Ciws.Count + "  Shields: " + ship.Shields.Count);
             GUILayout.Label("Armor blocks: " + ship.Armor.Count + "  " + FormatArmor(ship));
+            ShowArmorHP = GUILayout.Toggle(ShowArmorHP, "Show Armor HP");
             if (ship.DefensiveSolution.Target != null)
             {
                 GUILayout.Label("Defense target: " + ship.DefensiveSolution.Target.Kind + "  TTI "
