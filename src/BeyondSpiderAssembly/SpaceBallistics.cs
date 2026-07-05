@@ -114,6 +114,7 @@ namespace BeyondSpiderAssembly
         public float MassEstimate;
         public float Caliber;
         public bool SpawnImpactSpark;
+        public bool UseRaycastDetection;
 
         private Rigidbody body;
         private float spawnTime;
@@ -138,17 +139,37 @@ namespace BeyondSpiderAssembly
             if (Time.time - spawnTime > Lifetime)
             {
                 Destroy(gameObject);
+                return;
+            }
+
+            if (UseRaycastDetection && body != null)
+            {
+                float sweepDistance = body.velocity.magnitude * Time.fixedDeltaTime;
+                if (sweepDistance > 0f)
+                {
+                    RaycastHit hit;
+                    Ray ray = new Ray(transform.position, body.velocity);
+                    if (Physics.Raycast(ray, out hit, sweepDistance))
+                    {
+                        ResolveHit(hit.collider);
+                    }
+                }
             }
         }
 
         private void OnCollisionEnter(Collision collision)
         {
-            HeavyNuclearMissileBlock missile = collision.collider.GetComponentInParent<HeavyNuclearMissileBlock>();
+            ResolveHit(collision.collider);
+        }
+
+        private void ResolveHit(Collider hitCollider)
+        {
+            HeavyNuclearMissileBlock missile = hitCollider.GetComponentInParent<HeavyNuclearMissileBlock>();
             if (missile != null && missile.PlayerID != OwnerPlayerID)
             {
                 missile.ApplyDamage(Damage);
             }
-            DamageRouter.RoutePhysicalHit(collision.collider, Damage);
+            DamageRouter.RoutePhysicalHit(hitCollider, Damage);
             if (SpawnImpactSpark)
             {
                 SpaceEffectAssets.PlayPierceEffect(transform.position, Caliber);

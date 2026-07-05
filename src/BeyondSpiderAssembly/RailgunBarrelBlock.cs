@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Modding;
 using UnityEngine;
 
 namespace BeyondSpiderAssembly
@@ -89,15 +90,24 @@ namespace BeyondSpiderAssembly
             reload = 0f;
             float damage = Caliber.Value * 1.1f + massFactor * MuzzleVelocity.Value * MuzzleVelocity.Value * 0.0006f;
 
-            GameObject round = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            round.name = "BeyondSpider Railgun Slug";
+            GameObject round = new GameObject("BeyondSpider Railgun Slug");
             round.transform.position = transform.position + transform.forward * 1.2f;
-            round.transform.localScale = Vector3.one * Mathf.Clamp(Caliber.Value / 220f, 0.12f, 1.7f);
             Rigidbody rb = round.AddComponent<Rigidbody>();
+            rb.interpolation = RigidbodyInterpolation.Extrapolate;
             rb.mass = Mathf.Max(0.05f, massFactor);
             rb.drag = 0.005f;
             rb.useGravity = false;
             rb.velocity = direction.normalized * MuzzleVelocity.Value + (Body == null ? Vector3.zero : Body.velocity);
+
+            GameObject vis = new GameObject("CannonVis");
+            vis.transform.SetParent(round.transform);
+            vis.transform.localPosition = Vector3.zero;
+            vis.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+            vis.transform.localScale = Vector3.one * Caliber.Value / 500f;
+            MeshFilter meshFilter = vis.AddComponent<MeshFilter>();
+            meshFilter.sharedMesh = ModResource.GetMesh("Cannon Mesh").Mesh;
+            MeshRenderer meshRenderer = vis.AddComponent<MeshRenderer>();
+            meshRenderer.material.mainTexture = ModResource.GetTexture("Cannon Texture").Texture;
 
             SpaceKineticRound projectile = round.AddComponent<SpaceKineticRound>();
             projectile.OwnerPlayerID = PlayerID;
@@ -107,6 +117,7 @@ namespace BeyondSpiderAssembly
             projectile.MassEstimate = rb.mass;
             projectile.Caliber = Caliber.Value;
             projectile.SpawnImpactSpark = true;
+            projectile.UseRaycastDetection = true;
 
             SpaceEffectAssets.PlayMuzzleSound(transform, Caliber.Value);
 
