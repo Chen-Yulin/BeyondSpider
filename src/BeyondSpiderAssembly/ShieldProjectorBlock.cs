@@ -7,7 +7,7 @@ namespace BeyondSpiderAssembly
     {
         private const float HyperVelocityThreshold = 2200f;
         private const float DecelCoefficient = 0.02f;
-        private const float EnergyPerDeltaV = 0.6f;
+        private const float EnergyPerDeltaV = 0.02f;
         private const float UpkeepBase = 6f;
         private const float UpkeepPerVolume = 0.02f;
         private const int RingCount = 10;
@@ -106,6 +106,8 @@ namespace BeyondSpiderAssembly
                 SpaceKineticRound round = targets[i] as SpaceKineticRound;
                 if (round != null)
                 {
+                    // Once deceleration brings a round's speed to/below HyperVelocityThreshold, it stops
+                    // being eligible here — the field caps a round down to the threshold, it doesn't fully stop it.
                     if (!round.IsAlive || round.Velocity.magnitude <= HyperVelocityThreshold || !Contains(round.Position))
                     {
                         continue;
@@ -140,6 +142,7 @@ namespace BeyondSpiderAssembly
 
         private float Decelerate(ShipState ship, float effectiveStrength, Vector3 velocity, float mass)
         {
+            mass = Mathf.Max(0.05f, mass);
             float speed = velocity.magnitude;
             if (speed <= 0f)
             {
@@ -208,6 +211,8 @@ namespace BeyondSpiderAssembly
             Mesh mesh = new Mesh();
             mesh.vertices = vertices.ToArray();
             mesh.triangles = triangles.ToArray();
+            // Both winding orders share vertices, so normals average toward zero here — harmless
+            // under the unlit Particles/Additive material, but would render black under a lit shader.
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
             visMeshFilter.sharedMesh = mesh;

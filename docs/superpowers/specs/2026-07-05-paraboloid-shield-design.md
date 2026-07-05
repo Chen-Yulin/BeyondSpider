@@ -45,7 +45,7 @@ ratio             = ship.Energy.Request(EnergyBus.Shield, energyCost)
 appliedDeltaV     = desiredDeltaV * ratio
 newVelocity       = speed > 0 ? velocity * ((speed - appliedDeltaV) / speed) : velocity
 ```
-`DecelCoefficient = 0.02` and `EnergyPerDeltaV = 0.6` are code constants (no slider — `Strength` is already the player-facing knob; these two just fix its units). The energy cost formula keeps the same "kinetic-threat-shaped" shape the old code used (`mass * speed²`-ish, since `desiredDeltaV` itself scales with `speed`), so the docs' "faster = pricier" rule still holds, but the cost now feeds back through the same `effectiveStrength` the deceleration itself uses, rather than two independently-tuned formulas.
+`DecelCoefficient = 0.02` and `EnergyPerDeltaV = 0.02` are code constants (no slider — `Strength` is already the player-facing knob; these two just fix its units). The energy cost formula keeps the same "kinetic-threat-shaped" shape the old code used (`mass * speed²`-ish, since `desiredDeltaV` itself scales with `speed`), so the docs' "faster = pricier" rule still holds, but the cost now feeds back through the same `effectiveStrength` the deceleration itself uses, rather than two independently-tuned formulas. `EnergyPerDeltaV` is calibrated against `SuperCapacitorBlock`'s default capacity (600, scaled by block size) and `SpaceShipCore`'s default reactor output (1200/second total, split across buses) so a typical kinetic-round hit costs on the order of a few ticks' worth of reactor trickle rather than draining the entire Shield-bus capacitor pool on first contact.
 
 Both target types replace their `ApplyShieldEffect(float strength)` method with `ApplyShieldDeceleration(Vector3 newVelocity, float appliedDeltaV)`, called by `ShieldProjectorBlock` with the values computed above:
 - **`SpaceKineticRound`**: sets `body.velocity = newVelocity`. If the resulting speed drops below `RoundStallSpeed = 40`, the round is treated as absorbed and destroyed (mirrors the old "power > 1.5 ⇒ destroy" overwhelm case, but now driven by the actual physical outcome instead of a separate magic threshold).
@@ -90,7 +90,7 @@ renderer.enabled = intensity > 0.001f
 
 ## Constants (tunable, not precision-engineered)
 
-- `DecelCoefficient = 0.02`, `EnergyPerDeltaV = 0.6`
+- `DecelCoefficient = 0.02`, `EnergyPerDeltaV = 0.02` (lowered from an initial 0.6 after the final whole-branch review found the original value made per-target deceleration cost ~100x the Shield bus's typical per-tick reactor/capacitor scale, effectively neutering the shield on first contact)
 - `UpkeepBase = 6`, `UpkeepPerVolume = 0.02`
 - `RoundStallSpeed = 40`, `MissileDamagePerDeltaV = 0.4`
 - `RingCount = 10`, `SegmentCount = 32`
