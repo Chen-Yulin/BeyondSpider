@@ -76,7 +76,7 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
-            GameObject pierceEffect = Object.Instantiate(prefab, point, Quaternion.identity);
+            GameObject pierceEffect = (GameObject)Object.Instantiate(prefab, point, Quaternion.identity);
             pierceEffect.transform.localScale = Vector3.one * Mathf.Max(0.1f, caliber / 400f);
             Object.Destroy(pierceEffect, 1f);
 

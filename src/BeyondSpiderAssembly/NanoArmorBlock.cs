@@ -13,16 +13,22 @@ namespace BeyondSpiderAssembly
             Events.OnBlockInit += AddArmor;
         }
 
-        private void AddArmor(BlockBehaviour block)
+        private void AddArmor(Block block)
         {
-            switch (block.BlockID)
+            BlockBehaviour blockBehaviour = block.GameObject.GetComponent<BlockBehaviour>();
+            if (blockBehaviour == null)
+            {
+                return;
+            }
+
+            switch (blockBehaviour.BlockID)
             {
                 case (int)BlockType.SingleWoodenBlock:
                 case (int)BlockType.DoubleWoodenBlock:
                 case (int)BlockType.Log:
-                    if (block.gameObject.GetComponent<NanoArmorBehaviour>() == null)
+                    if (blockBehaviour.gameObject.GetComponent<NanoArmorBehaviour>() == null)
                     {
-                        block.gameObject.AddComponent<NanoArmorBehaviour>();
+                        blockBehaviour.gameObject.AddComponent<NanoArmorBehaviour>();
                     }
                     break;
                 default:
@@ -182,7 +188,7 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
-            overlay = Instantiate(prefab, transform);
+            overlay = (GameObject)Instantiate(prefab, transform);
             overlay.name = "NanoArmorVis";
             overlay.transform.localRotation = Quaternion.identity;
             overlay.layer = 25;
