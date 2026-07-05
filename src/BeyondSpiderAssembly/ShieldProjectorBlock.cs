@@ -8,14 +8,20 @@ namespace BeyondSpiderAssembly
         private const float HyperVelocityThreshold = 2200f;
 
         public MSlider Radius;
+        public MSlider Depth;
         public MSlider Strength;
+        public MSlider ColorHue;
+        public MToggle AlwaysVisible;
 
         public override void SafeAwake()
         {
             base.SafeAwake();
             gameObject.name = "BeyondSpider Shield Projector";
-            Radius = AddSlider("Shield Radius", "BSShieldRadius", 120f, 20f, 500f);
+            Radius = AddSlider("Shield Aperture Radius", "BSShieldRadius", 120f, 20f, 500f);
+            Depth = AddSlider("Shield Depth", "BSShieldDepth", 70f, 15f, 250f);
             Strength = AddSlider("Strength", "BSShieldStrength", 1f, 0.2f, 5f);
+            ColorHue = AddSlider("Shield Color", "BSShieldColorHue", 0.55f, 0f, 1f);
+            AlwaysVisible = AddToggle("Always Show Shield", "BSShieldAlwaysVisible", false);
         }
 
         public override void OnSimulateStart()
