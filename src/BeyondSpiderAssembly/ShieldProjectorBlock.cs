@@ -10,9 +10,21 @@ namespace BeyondSpiderAssembly
         private const float EnergyPerDeltaV = 0.6f;
         private const float UpkeepBase = 6f;
         private const float UpkeepPerVolume = 0.02f;
+        private const int RingCount = 10;
+        private const int SegmentCount = 32;
+        private const float BaseAlpha = 0.12f;
+        private const float FlashPeakAlpha = 0.35f;
+        private const float FlashDecayTime = 0.25f;
 
         private float lastUpkeepRatio;
         private bool interceptedThisTick;
+
+        private GameObject visObject;
+        private MeshFilter visMeshFilter;
+        private MeshRenderer visRenderer;
+        private float builtRadius = -1f;
+        private float builtDepth = -1f;
+        private float flashLevel;
 
         public MSlider Radius;
         public MSlider Depth;
@@ -39,6 +51,7 @@ namespace BeyondSpiderAssembly
             {
                 SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Shields);
             }
+            InitVisual();
         }
 
         public override void OnSimulateStop()
@@ -47,6 +60,11 @@ namespace BeyondSpiderAssembly
             if (ship != null)
             {
                 SpaceCombatRegistry.RemoveSubsystem(this, ship.Shields);
+            }
+            if (visObject != null)
+            {
+                Destroy(visObject);
+                visObject = null;
             }
         }
 
@@ -103,6 +121,8 @@ namespace BeyondSpiderAssembly
                     }
                 }
             }
+
+            UpdateVisual();
         }
 
         private bool Contains(Vector3 position)
@@ -136,6 +156,102 @@ namespace BeyondSpiderAssembly
             float energyCost = EnergyPerDeltaV * mass * speed * desiredDeltaV;
             float ratio = ship.Energy.Request(EnergyBus.Shield, energyCost);
             return desiredDeltaV * ratio;
+        }
+
+        private void InitVisual()
+        {
+            visObject = new GameObject("BS Shield Field Vis");
+            visObject.transform.SetParent(transform);
+            visObject.transform.localPosition = Vector3.zero;
+            visObject.transform.localRotation = Quaternion.identity;
+            visObject.transform.localScale = Vector3.one;
+            visMeshFilter = visObject.AddComponent<MeshFilter>();
+            visRenderer = visObject.AddComponent<MeshRenderer>();
+            visRenderer.material = new Material(Shader.Find("Particles/Additive"));
+            visRenderer.enabled = false;
+            RebuildMesh();
+        }
+
+        private void RebuildMesh()
+        {
+            builtRadius = Radius.Value;
+            builtDepth = Depth.Value;
+
+            List<Vector3> vertices = new List<Vector3>();
+            List<int> triangles = new List<int>();
+
+            for (int ring = 0; ring <= RingCount; ring++)
+            {
+                float a = builtDepth * ring / RingCount;
+                float r = builtRadius * Mathf.Sqrt(a / builtDepth);
+                for (int seg = 0; seg < SegmentCount; seg++)
+                {
+                    float angle = seg * Mathf.PI * 2f / SegmentCount;
+                    vertices.Add(new Vector3(r * Mathf.Cos(angle), r * Mathf.Sin(angle), a));
+                }
+            }
+
+            for (int ring = 0; ring < RingCount; ring++)
+            {
+                for (int seg = 0; seg < SegmentCount; seg++)
+                {
+                    int nextSeg = (seg + 1) % SegmentCount;
+                    int a0 = ring * SegmentCount + seg;
+                    int a1 = ring * SegmentCount + nextSeg;
+                    int b0 = (ring + 1) * SegmentCount + seg;
+                    int b1 = (ring + 1) * SegmentCount + nextSeg;
+
+                    AddQuad(triangles, a0, a1, b1, b0);
+                }
+            }
+
+            Mesh mesh = new Mesh();
+            mesh.vertices = vertices.ToArray();
+            mesh.triangles = triangles.ToArray();
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            visMeshFilter.sharedMesh = mesh;
+        }
+
+        private static void AddQuad(List<int> triangles, int a, int b, int c, int d)
+        {
+            triangles.Add(a);
+            triangles.Add(b);
+            triangles.Add(c);
+            triangles.Add(a);
+            triangles.Add(c);
+            triangles.Add(d);
+            triangles.Add(a);
+            triangles.Add(c);
+            triangles.Add(b);
+            triangles.Add(a);
+            triangles.Add(d);
+            triangles.Add(c);
+        }
+
+        private void UpdateVisual()
+        {
+            if (visRenderer == null)
+            {
+                return;
+            }
+
+            if (Mathf.Abs(Radius.Value - builtRadius) > 0.01f || Mathf.Abs(Depth.Value - builtDepth) > 0.01f)
+            {
+                RebuildMesh();
+            }
+
+            flashLevel = Mathf.Max(0f, flashLevel - Time.fixedDeltaTime / FlashDecayTime);
+            if (interceptedThisTick)
+            {
+                flashLevel = 1f;
+            }
+
+            float baseAlpha = AlwaysVisible.IsActive ? BaseAlpha * lastUpkeepRatio : 0f;
+            float intensity = Mathf.Clamp01(baseAlpha + FlashPeakAlpha * flashLevel);
+            Color hueColor = Color.HSVToRGB(ColorHue.Value, 1f, 1f);
+            visRenderer.material.color = hueColor * intensity;
+            visRenderer.enabled = intensity > 0.001f;
         }
     }
 }
