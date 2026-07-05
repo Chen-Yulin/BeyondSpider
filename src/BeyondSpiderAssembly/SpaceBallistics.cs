@@ -260,6 +260,8 @@ namespace BeyondSpiderAssembly
         public bool SpawnImpactSpark;
         public bool UseRaycastDetection;
 
+        private const float RoundStallSpeed = 40f;
+
         private Rigidbody body;
         private float spawnTime;
 
@@ -321,18 +323,17 @@ namespace BeyondSpiderAssembly
             Destroy(gameObject);
         }
 
-        public void ApplyShieldEffect(float power)
+        public void ApplyShieldDeceleration(Vector3 newVelocity, float appliedDeltaV)
         {
-            if (body == null || power <= 0f)
+            if (body == null || appliedDeltaV <= 0f)
             {
                 return;
             }
-            if (power > 1.5f)
+            body.velocity = newVelocity;
+            if (newVelocity.magnitude < RoundStallSpeed)
             {
                 Destroy(gameObject);
-                return;
             }
-            body.velocity *= Mathf.Lerp(1f, 0.35f, Mathf.Clamp01(power));
         }
 
         private void OnDestroy()

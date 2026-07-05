@@ -76,14 +76,16 @@ namespace BeyondSpiderAssembly
             }
         }
 
-        public void ApplyShieldEffect(float strength)
+        private const float MissileDamagePerDeltaV = 0.4f;
+
+        public void ApplyShieldDeceleration(Vector3 newVelocity, float appliedDeltaV)
         {
-            if (Body == null || strength <= 0f)
+            if (Body == null || appliedDeltaV <= 0f)
             {
                 return;
             }
-            Body.velocity *= Mathf.Clamp01(1f - 0.015f * strength);
-            ApplyDamage(8f * strength * Time.fixedDeltaTime);
+            Body.velocity = newVelocity;
+            ApplyDamage(MissileDamagePerDeltaV * appliedDeltaV);
         }
 
         private void Detonate(bool hit)
