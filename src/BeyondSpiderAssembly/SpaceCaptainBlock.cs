@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using Modding;
 using UnityEngine;
 
 namespace BeyondSpiderAssembly
@@ -48,6 +50,34 @@ namespace BeyondSpiderAssembly
                 ship.Priority = ship.Priority == CommandPriority.AntiAir
                     ? CommandPriority.AntiShip
                     : CommandPriority.AntiAir;
+            }
+        }
+
+        public override void SimulateFixedUpdateHost()
+        {
+            ShipState ship = OwnShip();
+            if (ship == null)
+            {
+                return;
+            }
+
+            ship.LockedSolution = default(FireSolution);
+            if (ship.LockedTarget == null || !ship.LockedTarget.IsAlive)
+            {
+                return;
+            }
+
+            for (int i = 0; i < ship.Tracks.Count; i++)
+            {
+                SensorTrack track = ship.Tracks[i];
+                if (!ReferenceEquals(track.Target, ship.LockedTarget))
+                {
+                    continue;
+                }
+                ship.LockedSolution.Target = track.Target;
+                ship.LockedSolution.AimPoint = track.Position + track.Velocity * Mathf.Clamp(track.TimeToImpact, 0f, 2f);
+                ship.LockedSolution.TimeToImpact = track.TimeToImpact;
+                break;
             }
         }
     }
