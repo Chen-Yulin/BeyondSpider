@@ -178,5 +178,144 @@ namespace BeyondSpiderAssembly
             marker.SetActive(false);
             return marker;
         }
+
+        private static ShipState OwnShipState()
+        {
+            int localPlayer = StatMaster.isMP ? PlayerData.localPlayer.networkId : 0;
+            return SpaceCombatRegistry.FindShip(localPlayer);
+        }
+
+        private GameObject GetOrCreateMarker(ITrackable target, TrackKind kind)
+        {
+            GameObject marker;
+            if (activeMarkers.TryGetValue(target, out marker))
+            {
+                return marker;
+            }
+
+            List<GameObject> pool = kind == TrackKind.Ship ? arrowPool : spherePool;
+            for (int i = 0; i < pool.Count; i++)
+            {
+                GameObject pooled = pool[i];
+                if (!pooled.activeSelf)
+                {
+                    markerToTrackable[pooled] = target;
+                    activeMarkers[target] = pooled;
+                    return pooled;
+                }
+            }
+
+            GameObject created = CreateMarker(kind);
+            pool.Add(created);
+            markerToTrackable[created] = target;
+            activeMarkers[target] = created;
+            return created;
+        }
+
+        private void HideAllMarkers()
+        {
+            for (int i = 0; i < arrowPool.Count; i++)
+            {
+                arrowPool[i].SetActive(false);
+            }
+            for (int i = 0; i < spherePool.Count; i++)
+            {
+                spherePool[i].SetActive(false);
+            }
+            activeMarkers.Clear();
+            lockIcon.SetActive(false);
+        }
+
+        public GameObject MarkerFor(ITrackable target)
+        {
+            GameObject marker;
+            activeMarkers.TryGetValue(target, out marker);
+            return marker;
+        }
+
+        public ITrackable TrackableFor(GameObject marker)
+        {
+            ITrackable target;
+            markerToTrackable.TryGetValue(marker, out target);
+            return target;
+        }
+
+        private void SyncMarkers()
+        {
+            ShipState ship = OwnShipState();
+            if (ship == null || ship.Captain == null)
+            {
+                HideAllMarkers();
+                return;
+            }
+
+            Transform captain = ship.Captain.transform;
+            List<ITrackable> seen = new List<ITrackable>();
+
+            for (int i = 0; i < ship.Tracks.Count; i++)
+            {
+                SensorTrack track = ship.Tracks[i];
+                if (track.Kind != TrackKind.Ship && track.Kind != TrackKind.HeavyMissile)
+                {
+                    continue;
+                }
+
+                seen.Add(track.Target);
+                GameObject marker = GetOrCreateMarker(track.Target, track.Kind);
+                marker.SetActive(true);
+
+                Vector3 relative = captain.InverseTransformVector(track.Position - captain.position);
+                Vector3 displayPos = relative / MetersPerUnit;
+                if (displayPos.magnitude > DisplayRadius)
+                {
+                    displayPos = displayPos.normalized * DisplayRadius;
+                }
+                marker.transform.localPosition = displayPos;
+
+                if (track.Kind == TrackKind.Ship)
+                {
+                    Vector3 velLocal = captain.InverseTransformDirection(track.Velocity);
+                    marker.transform.localRotation = velLocal.sqrMagnitude > 0.01f
+                        ? Quaternion.LookRotation(velLocal.normalized, Vector3.up)
+                        : Quaternion.identity;
+                }
+
+                Color color = SpaceBallistics.IsHostile(ship.Captain, track.Target) ? Color.red : Color.green;
+                Renderer renderer = marker.GetComponent<Renderer>();
+                if (track.Kind == TrackKind.Ship)
+                {
+                    renderer.material.SetColor("_TintColor", color);
+                }
+                else
+                {
+                    renderer.material.color = color;
+                }
+            }
+
+            List<ITrackable> stale = new List<ITrackable>();
+            foreach (KeyValuePair<ITrackable, GameObject> pair in activeMarkers)
+            {
+                if (!seen.Contains(pair.Key))
+                {
+                    pair.Value.SetActive(false);
+                    stale.Add(pair.Key);
+                }
+            }
+            for (int i = 0; i < stale.Count; i++)
+            {
+                activeMarkers.Remove(stale[i]);
+            }
+
+            GameObject lockedMarker;
+            if (ship.LockedTarget != null && activeMarkers.TryGetValue(ship.LockedTarget, out lockedMarker))
+            {
+                lockIcon.SetActive(true);
+                lockIcon.transform.localPosition = lockedMarker.transform.localPosition;
+            }
+            else
+            {
+                lockIcon.SetActive(false);
+            }
+        }
     }
 }
