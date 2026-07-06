@@ -37,6 +37,14 @@ namespace BeyondSpiderAssembly
         bool IsAlive { get; }
     }
 
+    // Only trackables with a stable, Guid-backed identity can be locked from the radar screen —
+    // that identity is what CaptainLockNet resolves across clients (see Task 7). Ships and heavy
+    // missiles are the only ITrackable kinds that are also placed blocks with a BuildingBlock.Guid.
+    public interface ILockable : ITrackable
+    {
+        int GuidHash { get; }
+    }
+
     public struct SensorTrack
     {
         public ITrackable Target;
@@ -206,6 +214,8 @@ namespace BeyondSpiderAssembly
         public readonly List<SpaceGunnerBlock> Gunners = new List<SpaceGunnerBlock>();
         public readonly List<SensorTrack> Tracks = new List<SensorTrack>();
         public FireSolution DefensiveSolution;
+        public ITrackable LockedTarget;
+        public FireSolution LockedSolution;
         public float LastRefreshTime;
     }
 
