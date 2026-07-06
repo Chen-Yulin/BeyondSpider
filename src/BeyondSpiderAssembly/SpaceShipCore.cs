@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace BeyondSpiderAssembly
 {
-    public class SpaceShipCore : SpaceBlock, ITrackable
+    public class SpaceShipCore : SpaceBlock, ILockable
     {
         public MSlider TotalPower;
         public MSlider ArmorPowerShare;
@@ -11,6 +11,8 @@ namespace BeyondSpiderAssembly
 
 
         public string DisplayName;
+
+        public int GuidHash { get; private set; }
 
         public TrackKind Kind { get { return TrackKind.Ship; } }
         public Vector3 Position { get { return transform.position; } }
@@ -32,6 +34,7 @@ namespace BeyondSpiderAssembly
         public override void OnSimulateStart()
         {
             base.OnSimulateStart();
+            GuidHash = BlockBehaviour.BuildingBlock.Guid.GetHashCode();
             DisplayName = "P" + PlayerID + " Core";
             SpaceCombatRegistry.RegisterCore(this);
             ApplyReactorMass();

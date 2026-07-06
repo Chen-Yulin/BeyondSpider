@@ -71,6 +71,7 @@
     <Compile Include="NanoArmorBlock.cs" />
     <Compile Include="DamageRouter.cs" />
     <Compile Include="SpaceInterceptorLauncherBlock.cs" />
+    <Compile Include="CaptainRadarView.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

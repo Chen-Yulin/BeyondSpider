@@ -15,9 +15,12 @@ namespace BeyondSpiderAssembly
 			Root.AddComponent<SpaceCombatRuntime>();
 			Root.AddComponent<SpaceFlakTurretNet>();
 			Root.AddComponent<NanoArmorController>();
+			Root.AddComponent<CaptainLockNet>();
+			Root.AddComponent<CaptainRadarView>();
 			ModNetworking.Callbacks[SpaceFlakTurretNet.ActiveMsg] += SpaceFlakTurretNet.Instance.ActiveReceiver;
 			ModNetworking.Callbacks[SpaceFlakTurretNet.StateMsg] += SpaceFlakTurretNet.Instance.StateReceiver;
 			ModNetworking.Callbacks[SpaceFlakTurretNet.ShotMsg] += SpaceFlakTurretNet.Instance.ShotReceiver;
+			ModNetworking.Callbacks[CaptainLockNet.LockMsg] += CaptainLockNet.Instance.LockReceiver;
 			Debug.Log("BeyondSpider Space Combat loaded.");
 		}
 	}

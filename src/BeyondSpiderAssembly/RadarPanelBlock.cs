@@ -66,10 +66,6 @@ namespace BeyondSpiderAssembly
                 {
                     continue;
                 }
-                if (Iff.IsActive && target.Team == Team)
-                {
-                    continue;
-                }
 
                 Vector3 delta = target.Position - transform.position;
                 float distance = delta.magnitude;

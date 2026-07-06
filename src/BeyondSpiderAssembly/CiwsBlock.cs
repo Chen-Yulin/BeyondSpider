@@ -46,12 +46,20 @@ namespace BeyondSpiderAssembly
             }
 
             ShipState ship = OwnShip();
-            if (ship == null || ship.DefensiveSolution.Target == null)
+            if (ship == null)
             {
                 return;
             }
 
-            HeavyNuclearMissileBlock missile = ship.DefensiveSolution.Target as HeavyNuclearMissileBlock;
+            FireSolution solution = (ship.Priority == CommandPriority.AntiShip && ship.LockedSolution.Target != null)
+                ? ship.LockedSolution
+                : ship.DefensiveSolution;
+            if (solution.Target == null)
+            {
+                return;
+            }
+
+            HeavyNuclearMissileBlock missile = solution.Target as HeavyNuclearMissileBlock;
             if (missile == null || !missile.IsAlive || missile.Team == Team)
             {
                 return;

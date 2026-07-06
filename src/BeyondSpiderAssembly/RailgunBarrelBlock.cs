@@ -96,7 +96,8 @@ namespace BeyondSpiderAssembly
             }
 
             reload = 0f;
-            float damage = Caliber.Value * 1.1f + massFactor * MuzzleVelocity.Value * MuzzleVelocity.Value * 0.0006f;
+            float baseDamage = Caliber.Value * 1.1f;
+            const float velocityDamageCoefficient = 0.0006f;
 
             GameObject round = new GameObject("BeyondSpider Railgun Slug");
             round.transform.position = transform.position + transform.forward * 1.2f;
@@ -121,7 +122,8 @@ namespace BeyondSpiderAssembly
             SpaceKineticRound projectile = round.AddComponent<SpaceKineticRound>();
             projectile.OwnerPlayerID = PlayerID;
             projectile.OwnerTeam = Team;
-            projectile.Damage = damage;
+            projectile.Damage = baseDamage;
+            projectile.VelocityDamageCoefficient = velocityDamageCoefficient;
             projectile.Lifetime = Mathf.Clamp(life + 2f, 2f, 12f);
             projectile.MassEstimate = rb.mass;
             projectile.Caliber = Caliber.Value;
@@ -225,7 +227,15 @@ namespace BeyondSpiderAssembly
             }
 
             ShipState ship = OwnShip();
-            if (ship == null || ship.DefensiveSolution.Target == null)
+            if (ship == null)
+            {
+                return;
+            }
+
+            FireSolution solution = (ship.Priority == CommandPriority.AntiShip && ship.LockedSolution.Target != null)
+                ? ship.LockedSolution
+                : ship.DefensiveSolution;
+            if (solution.Target == null)
             {
                 return;
             }
@@ -238,10 +248,10 @@ namespace BeyondSpiderAssembly
                     continue;
                 }
 
-                Vector3 delta = ship.DefensiveSolution.AimPoint - gun.transform.position;
+                Vector3 delta = solution.AimPoint - gun.transform.position;
                 if (Vector3.Angle(gun.transform.forward, delta) <= AimTolerance.Value)
                 {
-                    gun.TryFireControl(ship.DefensiveSolution);
+                    gun.TryFireControl(solution);
                 }
             }
         }

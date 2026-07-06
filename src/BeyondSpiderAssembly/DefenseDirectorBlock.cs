@@ -49,6 +49,10 @@ namespace BeyondSpiderAssembly
             for (int i = 0; i < ship.Tracks.Count; i++)
             {
                 SensorTrack track = ship.Tracks[i];
+                if (!SpaceBallistics.IsHostile(this, track.Target))
+                {
+                    continue;
+                }
                 if (track.Distance > DefendedRadius.Value)
                 {
                     continue;

@@ -13,10 +13,18 @@ The main implementation rule should be: blocks register capability, managers agg
 **舰船核心 / FusionShipCore**
 
 - Replaces the WW2 naval `Controller` role as the ship identity and command anchor.
-- Defines ship-local coordinate frame, ship center, approximate volume, team/player ownership, and radar lock point.
+- Defines ship center, approximate volume, team/player ownership, and radar lock point — position only, not orientation.
 - Exposes build sliders for total power output and power share ratios across nano armor, shield, and weapons.
 - Applies reactor mass/power penalty so bigger output means heavier ship.
-- Hosts or opens the 3D radar/command UI, derived from WW2 naval captain UI and MAC radar display concepts.
+
+**船长 / Captain**
+
+- Fire-control command entry point and target-lock authority for the ship, derived from WW2 naval captain UI and MAC radar display concepts.
+- **Defines the ship's orientation.** The captain block's own `transform.right`/`forward` *is* the ship's local coordinate frame — anything that needs "ship forward/right" (the radar grid axes, and any future system with the same need) reads it from Captain, not ShipCore. A ship with no Captain block has no defined orientation for these purposes, matching that it also can't open the radar UI or lock targets.
+- Hosts and opens the 3D radar/command UI (grid on the captain's own right/forward plane, tracked ships and heavy missiles as meshes, orbit/zoom/click-to-lock).
+- Owns the ship-wide locked-target state that heavy missiles and other weapons read.
+- Also switches anti-ship/anti-air priority (existing `SwitchPriority` key).
+- Is not the ship's spatial anchor and does not represent the ship as a radar-lockable target — that stays on ShipCore.
 
 **超级电容 / SuperCapacitor**
 
