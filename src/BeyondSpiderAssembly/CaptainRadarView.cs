@@ -126,7 +126,7 @@ namespace BeyondSpiderAssembly
         {
             lockIcon = GameObject.CreatePrimitive(PrimitiveType.Quad);
             lockIcon.name = "BS Radar Lock Icon";
-            Object.Destroy(lockIcon.GetComponent<Collider>());
+            Object.DestroyImmediate(lockIcon.GetComponent<Collider>());
             lockIcon.transform.SetParent(pocketRoot, false);
             lockIcon.transform.localScale = Vector3.one * 0.5f;
             MeshRenderer renderer = lockIcon.GetComponent<MeshRenderer>();
@@ -168,7 +168,7 @@ namespace BeyondSpiderAssembly
             {
                 marker = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                 marker.name = "BS Radar Missile Marker";
-                Object.Destroy(marker.GetComponent<Collider>());
+                Object.DestroyImmediate(marker.GetComponent<Collider>());
             }
 
             marker.transform.SetParent(pocketRoot, false);
