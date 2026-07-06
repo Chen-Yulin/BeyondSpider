@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace BeyondSpiderAssembly
 {
-    public class HeavyNuclearMissileBlock : SpaceBlock, ITrackable
+    public class HeavyNuclearMissileBlock : SpaceBlock, ILockable
     {
         public MKey Launch;
         public MSlider HealthSlider;
@@ -14,11 +14,15 @@ namespace BeyondSpiderAssembly
         private bool launched;
         private float health;
 
+        public int GuidHash { get; private set; }
+
         public TrackKind Kind { get { return TrackKind.HeavyMissile; } }
         public Vector3 Position { get { return transform.position; } }
         public Vector3 Velocity { get { return Body == null ? Vector3.zero : Body.velocity; } }
         public float Radius { get { return 3f; } }
-        public bool IsAlive { get { return BlockBehaviour != null && BlockBehaviour.isSimulating && health > 0f; } }
+        // Requires `launched` so a still-mounted, unfired missile (including an ally's) never
+        // shows up as an independent radar target — see docs/adr/0004-hostile-filtering-moves-to-consumers.md.
+        public bool IsAlive { get { return launched && BlockBehaviour != null && BlockBehaviour.isSimulating && health > 0f; } }
         public float ThreatMass { get { return ThreatMassSlider.Value; } }
 
         public override void SafeAwake()
@@ -36,6 +40,7 @@ namespace BeyondSpiderAssembly
         public override void OnSimulateStart()
         {
             base.OnSimulateStart();
+            GuidHash = BlockBehaviour.BuildingBlock.Guid.GetHashCode();
             health = HealthSlider.Value;
             launched = AutoLaunch.IsActive;
             SpaceCombatRegistry.RegisterTrackable(this);
