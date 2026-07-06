@@ -13,6 +13,7 @@ namespace BeyondSpiderAssembly
 
         private bool launched;
         private float health;
+        private bool hadGuidance;
 
         public int GuidHash { get; private set; }
 
@@ -62,7 +63,51 @@ namespace BeyondSpiderAssembly
             {
                 launched = true;
             }
-            if (launched && Body != null && health > 0f)
+            if (!launched || Body == null || health <= 0f)
+            {
+                return;
+            }
+
+            ShipState ship = OwnShip();
+            ITrackable target = ship == null ? null : ship.LockedTarget;
+            bool trackedThisTick = false;
+            if (target != null && target.IsAlive && ship != null)
+            {
+                for (int i = 0; i < ship.Tracks.Count; i++)
+                {
+                    if (ReferenceEquals(ship.Tracks[i].Target, target))
+                    {
+                        trackedThisTick = true;
+                        break;
+                    }
+                }
+            }
+
+            if (trackedThisTick)
+            {
+                hadGuidance = true;
+                Vector3 intercept = target.Position + target.Velocity * 0.35f;
+                Vector3 desired = (intercept - transform.position).normalized;
+                Body.AddForce(desired * Thrust.Value, ForceMode.Force);
+                if (Body.velocity.sqrMagnitude > 1f)
+                {
+                    transform.rotation = Quaternion.LookRotation(Body.velocity.normalized, Vector3.up);
+                }
+            }
+            else if (hadGuidance)
+            {
+                float speed = Body.velocity.magnitude;
+                if (speed > 0.05f)
+                {
+                    float maxDecelForce = speed * Body.mass / Time.fixedDeltaTime;
+                    Body.AddForce(-Body.velocity.normalized * Mathf.Min(Thrust.Value, maxDecelForce), ForceMode.Force);
+                }
+                else
+                {
+                    Body.velocity = Vector3.zero;
+                }
+            }
+            else
             {
                 Body.AddForce(transform.forward * Thrust.Value, ForceMode.Force);
             }
