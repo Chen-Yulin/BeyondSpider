@@ -23,6 +23,19 @@ namespace BeyondSpiderAssembly
         public bool IsOpen;
         public float MetersPerUnit = 50f;
 
+        private const float PanelSize = 420f;
+        private const float MinMetersPerUnit = 5f;
+        private const float MaxMetersPerUnit = 2000f;
+        private const float ZoomStep = 1.15f;
+        private const float OrbitSpeed = 3f;
+        private const float ClickPixelThreshold = 4f;
+
+        private bool orbiting;
+        private bool leftDownInRect;
+        private Vector2 mouseDownPos;
+        private float yaw;
+        private float pitch = 25f;
+
         private Transform pocketRoot;
         private Transform gimbal;
         private Camera radarCamera;
@@ -316,6 +329,138 @@ namespace BeyondSpiderAssembly
             {
                 lockIcon.SetActive(false);
             }
+        }
+
+        public void SetOpen(bool open)
+        {
+            IsOpen = open;
+            if (radarCamera != null)
+            {
+                radarCamera.enabled = open;
+            }
+        }
+
+        private static Rect GetPanelRect()
+        {
+            return new Rect(Screen.width - PanelSize - 20f, Screen.height - PanelSize - 20f, PanelSize, PanelSize);
+        }
+
+        private static Vector2 FlippedMouse()
+        {
+            return new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
+        }
+
+        private void Update()
+        {
+            if (!IsOpen)
+            {
+                return;
+            }
+
+            Rect rect = GetPanelRect();
+            HandleOrbitAndZoom(rect);
+            HandleClick(rect);
+            SyncMarkers();
+        }
+
+        private void HandleOrbitAndZoom(Rect rect)
+        {
+            bool overRect = rect.Contains(FlippedMouse());
+
+            if (Input.GetMouseButtonDown(1) && overRect)
+            {
+                orbiting = true;
+            }
+            if (Input.GetMouseButtonUp(1))
+            {
+                orbiting = false;
+            }
+            if (orbiting)
+            {
+                yaw += Input.GetAxis("Mouse X") * OrbitSpeed;
+                pitch = Mathf.Clamp(pitch - Input.GetAxis("Mouse Y") * OrbitSpeed, -85f, 85f);
+                gimbal.localRotation = Quaternion.Euler(pitch, yaw, 0f);
+            }
+
+            if (overRect)
+            {
+                float scroll = Input.GetAxis("Mouse ScrollWheel");
+                if (scroll > 0.0001f)
+                {
+                    MetersPerUnit = Mathf.Clamp(MetersPerUnit / ZoomStep, MinMetersPerUnit, MaxMetersPerUnit);
+                }
+                else if (scroll < -0.0001f)
+                {
+                    MetersPerUnit = Mathf.Clamp(MetersPerUnit * ZoomStep, MinMetersPerUnit, MaxMetersPerUnit);
+                }
+            }
+        }
+
+        private void HandleClick(Rect rect)
+        {
+            bool overRect = rect.Contains(FlippedMouse());
+
+            if (Input.GetMouseButtonDown(0) && overRect)
+            {
+                mouseDownPos = Input.mousePosition;
+                leftDownInRect = true;
+            }
+            if (Input.GetMouseButtonUp(0))
+            {
+                bool wasDownInRect = leftDownInRect;
+                leftDownInRect = false;
+                if (wasDownInRect && overRect && Vector2.Distance(mouseDownPos, Input.mousePosition) < ClickPixelThreshold)
+                {
+                    TryLockAtMouse(rect);
+                }
+            }
+        }
+
+        private void TryLockAtMouse(Rect rect)
+        {
+            ShipState ship = OwnShipState();
+            if (ship == null || ship.Captain == null || radarCamera == null)
+            {
+                return;
+            }
+
+            Vector2 mouse = FlippedMouse();
+            float fracX = (mouse.x - rect.x) / rect.width;
+            float fracY = (mouse.y - rect.y) / rect.height;
+            Vector3 rtPoint = new Vector3(fracX * radarCamera.pixelWidth, (1f - fracY) * radarCamera.pixelHeight, 0f);
+            Ray ray = radarCamera.ScreenPointToRay(rtPoint);
+
+            RaycastHit hit;
+            if (!Physics.Raycast(ray, out hit, 100f))
+            {
+                return;
+            }
+
+            ITrackable target = TrackableFor(hit.collider.gameObject);
+            if (target == null)
+            {
+                return;
+            }
+
+            bool willLock = !ReferenceEquals(ship.LockedTarget, target);
+            ship.LockedTarget = willLock ? target : null;
+
+            ILockable lockable = target as ILockable;
+            int targetGuidHash = lockable != null ? lockable.GuidHash : 0;
+            ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(ship.Captain.PlayerID, target.PlayerID, targetGuidHash, willLock));
+        }
+
+        private void OnGUI()
+        {
+            if (!IsOpen || StatMaster.hudHidden || radarTexture == null)
+            {
+                return;
+            }
+
+            Rect rect = GetPanelRect();
+            GUI.DrawTexture(rect, radarTexture);
+            float ringMeters = MetersPerUnit * DisplayRadius / RingCount;
+            GUI.Label(new Rect(rect.x, rect.y - 20f, rect.width, 20f), "1 ring = " + ringMeters.ToString("0") + "m");
         }
     }
 }
