@@ -24,12 +24,14 @@ namespace BeyondSpiderAssembly
         private MeshRenderer visRenderer;
         private float builtRadius = -1f;
         private float builtDepth = -1f;
+        private float builtheight = -1f;
         private float flashLevel;
 
         public MSlider Radius;
         public MSlider Depth;
         public MSlider Strength;
         public MSlider ColorHue;
+        public MSlider Height;
         public MToggle AlwaysVisible;
 
         public override void SafeAwake()
@@ -38,6 +40,7 @@ namespace BeyondSpiderAssembly
             gameObject.name = "BeyondSpider Shield Projector";
             Radius = AddSlider("Shield Aperture Radius", "BSShieldRadius", 120f, 20f, 500f);
             Depth = AddSlider("Shield Depth", "BSShieldDepth", 70f, 15f, 250f);
+            Height = AddSlider("Shield Height", "BSShieldHeight", 70f, 15f, 250f);
             Strength = AddSlider("Strength", "BSShieldStrength", 1f, 0.2f, 5f);
             ColorHue = AddSlider("Shield Color", "BSShieldColorHue", 0.55f, 0f, 1f);
             AlwaysVisible = AddToggle("Always Show Shield", "BSShieldAlwaysVisible", false);
@@ -129,7 +132,7 @@ namespace BeyondSpiderAssembly
 
         private bool Contains(Vector3 position)
         {
-            Vector3 delta = position - transform.position;
+            Vector3 delta = position - (transform.position + Height.Value * transform.forward);
             float a = Vector3.Dot(delta, -transform.forward);
             if (a < 0f || a > Depth.Value)
             {
@@ -175,12 +178,19 @@ namespace BeyondSpiderAssembly
             visRenderer.material = new Material(Shader.Find("Particles/Additive"));
             visRenderer.enabled = false;
             RebuildMesh();
+            PlaceMesh();
+        }
+        private void PlaceMesh()
+        {
+            builtheight = Height.Value;
+            visObject.transform.localPosition.Set(0, 0, Height.Value);
         }
 
         private void RebuildMesh()
         {
             builtRadius = Radius.Value;
             builtDepth = Depth.Value;
+            
 
             List<Vector3> vertices = new List<Vector3>();
             List<int> triangles = new List<int>();
@@ -243,9 +253,13 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
-            if (Mathf.Abs(Radius.Value - builtRadius) > 0.01f || Mathf.Abs(Depth.Value - builtDepth) > 0.01f)
+            if (Mathf.Abs(Radius.Value - builtRadius) > 0.1f || Mathf.Abs(Depth.Value - builtDepth) > 0.1f)
             {
                 RebuildMesh();
+            }
+            if (Mathf.Abs(Height.Value - builtheight) > 0.1f)
+            {
+                PlaceMesh();
             }
 
             flashLevel = Mathf.Max(0f, flashLevel - Time.fixedDeltaTime / FlashDecayTime);
