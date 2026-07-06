@@ -227,7 +227,15 @@ namespace BeyondSpiderAssembly
             }
 
             ShipState ship = OwnShip();
-            if (ship == null || ship.DefensiveSolution.Target == null)
+            if (ship == null)
+            {
+                return;
+            }
+
+            FireSolution solution = (ship.Priority == CommandPriority.AntiShip && ship.LockedSolution.Target != null)
+                ? ship.LockedSolution
+                : ship.DefensiveSolution;
+            if (solution.Target == null)
             {
                 return;
             }
@@ -240,10 +248,10 @@ namespace BeyondSpiderAssembly
                     continue;
                 }
 
-                Vector3 delta = ship.DefensiveSolution.AimPoint - gun.transform.position;
+                Vector3 delta = solution.AimPoint - gun.transform.position;
                 if (Vector3.Angle(gun.transform.forward, delta) <= AimTolerance.Value)
                 {
-                    gun.TryFireControl(ship.DefensiveSolution);
+                    gun.TryFireControl(solution);
                 }
             }
         }
