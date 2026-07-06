@@ -16,6 +16,7 @@ namespace BeyondSpiderAssembly
 			Root.AddComponent<SpaceFlakTurretNet>();
 			Root.AddComponent<NanoArmorController>();
 			Root.AddComponent<CaptainLockNet>();
+			Root.AddComponent<CaptainRadarView>();
 			ModNetworking.Callbacks[SpaceFlakTurretNet.ActiveMsg] += SpaceFlakTurretNet.Instance.ActiveReceiver;
 			ModNetworking.Callbacks[SpaceFlakTurretNet.StateMsg] += SpaceFlakTurretNet.Instance.StateReceiver;
 			ModNetworking.Callbacks[SpaceFlakTurretNet.ShotMsg] += SpaceFlakTurretNet.Instance.ShotReceiver;
