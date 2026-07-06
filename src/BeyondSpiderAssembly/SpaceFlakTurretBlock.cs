@@ -272,29 +272,48 @@ namespace BeyondSpiderAssembly
             }
 
             ShipState ship = OwnShip();
-            if (ship == null || ship.DefensiveSolution.Target == null)
-            {
-                SetSmallShoot(false);
-                return;
-            }
-
-            ITrackable target = ship.DefensiveSolution.Target;
-            if (!SpaceBallistics.IsHostile(this, target))
+            if (ship == null)
             {
                 SetSmallShoot(false);
                 return;
             }
 
             float muzzleVelocity = InitialVelocity(caliber);
-            Vector3 aimPoint = ship.DefensiveSolution.AimPoint;
-            if (ship.Tracks.Count > 0)
+            FireSolution solution;
+            bool hasSolution = false;
+            if (ship.Priority == CommandPriority.AntiShip && ship.Captain != null)
             {
-                SensorTrack synthetic = new SensorTrack();
-                synthetic.Position = target.Position;
-                synthetic.Velocity = target.Velocity;
-                aimPoint = SpaceBallistics.AimPoint(GetMuzzlePosition(), synthetic, muzzleVelocity);
+                hasSolution = ship.Captain.TryGetLockedFireSolution(GetMuzzlePosition(), muzzleVelocity, out solution);
+            }
+            else
+            {
+                solution = default(FireSolution);
             }
 
+            if (!hasSolution)
+            {
+                if (ship.DefensiveSolution.Target == null)
+                {
+                    SetSmallShoot(false);
+                    return;
+                }
+
+                solution = ship.DefensiveSolution;
+                SensorTrack synthetic = new SensorTrack();
+                synthetic.Position = solution.Target.Position;
+                synthetic.Velocity = solution.Target.Velocity;
+                solution.AimPoint = SpaceBallistics.AimPoint(GetMuzzlePosition(), synthetic, muzzleVelocity);
+                hasSolution = true;
+            }
+
+            ITrackable target = solution.Target;
+            if (!SpaceBallistics.IsHostile(this, target))
+            {
+                SetSmallShoot(false);
+                return;
+            }
+
+            Vector3 aimPoint = solution.AimPoint;
             Vector3 delta = aimPoint - GetMuzzlePosition();
             if (delta.magnitude > Range.Value)
             {

@@ -1,0 +1,3 @@
+# Gunners drive SteeringWheels; single-block flak drives visual transforms
+
+Player-built turrets use Besiege's vanilla `SteeringWheel` control surface and WW2/Naval-style key emulation: `SpaceGunnerBlock` binds by shared keys, drives `SteeringWheel.AngleToBe`, respects `SteeringWheel.Flipped`/`LimitsSlider`, and emulates the bound fire key. Single-block flak turrets do not represent player-built physical mechanisms, so they keep the WW2 `AABlock` pattern of direct yaw/pitch visual transforms. This split preserves vanilla hinge physics and player firing-arc setup for custom turrets while keeping autonomous single-block weapons deterministic and cheap.
