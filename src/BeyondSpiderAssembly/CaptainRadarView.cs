@@ -19,16 +19,15 @@ namespace BeyondSpiderAssembly
         private const int SegmentCount = 32;
         private const float MarkerColliderRadius = 0.3f;
         private const float MarkerScale = 0.3f;
-
-        public bool IsOpen;
-        public float MetersPerUnit = 50f;
-
         private const float PanelSize = 420f;
         private const float MinMetersPerUnit = 5f;
         private const float MaxMetersPerUnit = 2000f;
         private const float ZoomStep = 1.15f;
         private const float OrbitSpeed = 3f;
         private const float ClickPixelThreshold = 4f;
+
+        public bool IsOpen;
+        public float MetersPerUnit = 50f;
 
         private bool orbiting;
         private bool leftDownInRect;
@@ -47,10 +46,8 @@ namespace BeyondSpiderAssembly
         private readonly List<GameObject> spherePool = new List<GameObject>();
         private readonly Dictionary<GameObject, ITrackable> markerToTrackable = new Dictionary<GameObject, ITrackable>();
         private readonly Dictionary<ITrackable, GameObject> activeMarkers = new Dictionary<ITrackable, GameObject>();
-
-        public Camera RadarCamera { get { return radarCamera; } }
-        public RenderTexture RadarTexture { get { return radarTexture; } }
-        public Transform Gimbal { get { return gimbal; } }
+        private readonly HashSet<ITrackable> seen = new HashSet<ITrackable>();
+        private readonly List<ITrackable> stale = new List<ITrackable>();
 
         private void Awake()
         {
@@ -239,13 +236,6 @@ namespace BeyondSpiderAssembly
             lockIcon.SetActive(false);
         }
 
-        public GameObject MarkerFor(ITrackable target)
-        {
-            GameObject marker;
-            activeMarkers.TryGetValue(target, out marker);
-            return marker;
-        }
-
         public ITrackable TrackableFor(GameObject marker)
         {
             ITrackable target;
@@ -263,7 +253,7 @@ namespace BeyondSpiderAssembly
             }
 
             Transform captain = ship.Captain.transform;
-            List<ITrackable> seen = new List<ITrackable>();
+            seen.Clear();
 
             for (int i = 0; i < ship.Tracks.Count; i++)
             {
@@ -305,7 +295,7 @@ namespace BeyondSpiderAssembly
                 }
             }
 
-            List<ITrackable> stale = new List<ITrackable>();
+            stale.Clear();
             foreach (KeyValuePair<ITrackable, GameObject> pair in activeMarkers)
             {
                 if (!seen.Contains(pair.Key))

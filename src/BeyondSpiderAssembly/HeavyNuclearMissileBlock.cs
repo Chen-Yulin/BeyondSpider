@@ -71,7 +71,7 @@ namespace BeyondSpiderAssembly
             ShipState ship = OwnShip();
             ITrackable target = ship == null ? null : ship.LockedTarget;
             bool trackedThisTick = false;
-            if (target != null && target.IsAlive && ship != null)
+            if (target != null && target.IsAlive)
             {
                 for (int i = 0; i < ship.Tracks.Count; i++)
                 {
