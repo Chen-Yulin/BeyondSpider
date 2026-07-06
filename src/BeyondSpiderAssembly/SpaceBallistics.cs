@@ -253,12 +253,26 @@ namespace BeyondSpiderAssembly
         public int OwnerPlayerID;
         public MPTeam OwnerTeam;
         public float Damage = 100f;
+        public float VelocityDamageCoefficient;
         public float Lifetime = 8f;
         public float RadiusValue = 0.45f;
         public float MassEstimate;
         public float Caliber;
         public bool SpawnImpactSpark;
         public bool UseRaycastDetection;
+
+        public float CurrentDamage
+        {
+            get
+            {
+                if (VelocityDamageCoefficient <= 0f)
+                {
+                    return Damage;
+                }
+                float speed = Velocity.magnitude;
+                return Damage + MassEstimate * speed * speed * VelocityDamageCoefficient;
+            }
+        }
 
         private const float RoundStallSpeed = 40f;
 
@@ -310,12 +324,13 @@ namespace BeyondSpiderAssembly
 
         private void ResolveHit(Collider hitCollider)
         {
+            float damage = CurrentDamage;
             HeavyNuclearMissileBlock missile = hitCollider.GetComponentInParent<HeavyNuclearMissileBlock>();
             if (missile != null && missile.PlayerID != OwnerPlayerID)
             {
-                missile.ApplyDamage(Damage);
+                missile.ApplyDamage(damage);
             }
-            DamageRouter.RoutePhysicalHit(hitCollider, Damage);
+            DamageRouter.RoutePhysicalHit(hitCollider, damage);
             if (SpawnImpactSpark)
             {
                 SpaceEffectAssets.PlayPierceEffect(transform.position, Caliber);
