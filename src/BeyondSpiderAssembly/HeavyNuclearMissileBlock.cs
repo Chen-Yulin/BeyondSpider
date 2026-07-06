@@ -14,6 +14,7 @@ namespace BeyondSpiderAssembly
         private bool launched;
         private float health;
         private bool hadGuidance;
+        private bool launchQueued;
 
         public int GuidHash { get; private set; }
 
@@ -44,6 +45,7 @@ namespace BeyondSpiderAssembly
             GuidHash = BlockBehaviour.BuildingBlock.Guid.GetHashCode();
             health = HealthSlider.Value;
             launched = AutoLaunch.IsActive;
+            launchQueued = false;
             SpaceCombatRegistry.RegisterTrackable(this);
             if (Body != null)
             {
@@ -57,12 +59,22 @@ namespace BeyondSpiderAssembly
             SpaceCombatRegistry.UnregisterTrackable(this);
         }
 
+        public override void SimulateUpdateHost()
+        {
+            if (Launch.IsHeld)
+            {
+                launchQueued = true;
+            }
+        }
+
         public override void SimulateFixedUpdateHost()
         {
-            if (!launched && Launch.IsHeld)
+            if (!launched && launchQueued)
             {
                 launched = true;
             }
+            launchQueued = false;
+
             if (!launched || Body == null || health <= 0f)
             {
                 return;

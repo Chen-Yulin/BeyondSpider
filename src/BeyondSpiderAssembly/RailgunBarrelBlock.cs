@@ -18,6 +18,7 @@ namespace BeyondSpiderAssembly
 
         private float reloadTime;
         private float reload;
+        private bool manualFireQueued;
 
         public override void SafeAwake()
         {
@@ -35,6 +36,7 @@ namespace BeyondSpiderAssembly
             base.OnSimulateStart();
             reloadTime = Mathf.Clamp(0.35f + Caliber.Value / 180f, 0.18f, 6f);
             reload = reloadTime;
+            manualFireQueued = false;
             ShipState ship = OwnShip();
             if (ship != null)
             {
@@ -51,11 +53,20 @@ namespace BeyondSpiderAssembly
             }
         }
 
+        public override void SimulateUpdateHost()
+        {
+            if (FireKey.IsPressed)
+            {
+                manualFireQueued = true;
+            }
+        }
+
         public override void SimulateFixedUpdateHost()
         {
             reload = Mathf.Min(reloadTime, reload + Time.fixedDeltaTime);
-            if (FireKey.IsPressed)
+            if (manualFireQueued)
             {
+                manualFireQueued = false;
                 FireAt(transform.forward, 20f);
             }
         }

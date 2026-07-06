@@ -9,6 +9,12 @@
 3. `docs/space-combat-framework.md`：系统架构、阶段计划和复用方向。
 4. 本文档：写 Mod 时的约束、默认假设和实现检查表。
 
+## 输入采样规则
+
+所有 `MKey` 瞬时输入必须在 `SimulateUpdateHost()` 中检测；如果客户端只需要做本地显示状态，也可以在 `SimulateUpdateClient()` 中检测。不要只在 `SimulateFixedUpdateHost()` 中读取 `MKey.IsPressed` 或 `MKey.IsHeld`：Besiege 的模拟流速可能很低，FixedUpdate 间隔变长后会漏掉短按。
+
+如果按键触发的是物理、耗能、发射、生成弹体或刚体受力，做法是先在 `SimulateUpdateHost()` 中锁存一个布尔请求，再在 `SimulateFixedUpdateHost()` 中消费该请求并执行实际逻辑。能量检查、装填检查、投射物生成、`Rigidbody` 操作仍然放在 `SimulateFixedUpdateHost()` 中。
+
 ## Besiege 基本设定
 
 Besiege 的玩家机器不是传统游戏里的单个 Actor，而是一组物理零件组成的机器。Mod 写法必须尊重这个前提：

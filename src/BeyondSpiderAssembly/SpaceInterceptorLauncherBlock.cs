@@ -13,6 +13,7 @@ namespace BeyondSpiderAssembly
 
         private float reload;
         private float reloadTime = 3f;
+        private bool manualLaunchQueued;
 
         public override void SafeAwake()
         {
@@ -30,6 +31,7 @@ namespace BeyondSpiderAssembly
         {
             base.OnSimulateStart();
             reload = reloadTime;
+            manualLaunchQueued = false;
             ShipState ship = OwnShip();
             if (ship != null)
             {
@@ -46,11 +48,20 @@ namespace BeyondSpiderAssembly
             }
         }
 
+        public override void SimulateUpdateHost()
+        {
+            if (Launch.IsPressed)
+            {
+                manualLaunchQueued = true;
+            }
+        }
+
         public override void SimulateFixedUpdateHost()
         {
             reload = Mathf.Min(reloadTime, reload + Time.fixedDeltaTime);
             ShipState ship = OwnShip();
-            bool manual = Launch.IsPressed;
+            bool manual = manualLaunchQueued;
+            manualLaunchQueued = false;
             if (!manual && (!AutoLaunch.IsActive || ship == null || ship.DefensiveSolution.Target == null))
             {
                 return;
