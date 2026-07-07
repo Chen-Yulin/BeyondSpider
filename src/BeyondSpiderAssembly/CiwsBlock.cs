@@ -9,6 +9,10 @@ namespace BeyondSpiderAssembly
         public MSlider DamagePerSecond;
         public MSlider EnergyPerSecond;
 
+        // See agent-besiege-mod-guide.md's "注册时序规范" — retried each tick until it
+        // succeeds, since ShipState may not exist yet when this OnSimulateStart runs.
+        private bool registered;
+
         public override void SafeAwake()
         {
             base.SafeAwake();
@@ -26,6 +30,7 @@ namespace BeyondSpiderAssembly
             if (ship != null)
             {
                 SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Ciws);
+                registered = true;
             }
         }
 
@@ -36,16 +41,23 @@ namespace BeyondSpiderAssembly
             {
                 SpaceCombatRegistry.RemoveSubsystem(this, ship.Ciws);
             }
+            registered = false;
         }
 
         public override void SimulateFixedUpdateHost()
         {
+            ShipState ship = OwnShip();
+            if (ship != null && !registered)
+            {
+                SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Ciws);
+                registered = true;
+            }
+
             if (!DefaultActive.IsActive)
             {
                 return;
             }
 
-            ShipState ship = OwnShip();
             if (ship == null)
             {
                 return;

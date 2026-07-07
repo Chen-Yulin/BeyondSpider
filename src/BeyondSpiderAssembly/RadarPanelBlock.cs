@@ -10,6 +10,9 @@ namespace BeyondSpiderAssembly
         public MToggle Iff;
 
         private float nextScanTime;
+        // See agent-besiege-mod-guide.md's "注册时序规范" — retried each tick until it
+        // succeeds, since ShipState may not exist yet when this OnSimulateStart runs.
+        private bool registered;
 
         public override void SafeAwake()
         {
@@ -26,6 +29,7 @@ namespace BeyondSpiderAssembly
             if (ship != null)
             {
                 SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Radars);
+                registered = true;
             }
         }
 
@@ -36,17 +40,24 @@ namespace BeyondSpiderAssembly
             {
                 SpaceCombatRegistry.RemoveSubsystem(this, ship.Radars);
             }
+            registered = false;
         }
 
         public override void SimulateFixedUpdateHost()
         {
+            ShipState ship = OwnShip();
+            if (ship != null && !registered)
+            {
+                SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Radars);
+                registered = true;
+            }
+
             if (Time.time < nextScanTime)
             {
                 return;
             }
             nextScanTime = Time.time + 0.25f;
 
-            ShipState ship = OwnShip();
             if (ship == null)
             {
                 return;

@@ -18,6 +18,9 @@ namespace BeyondSpiderAssembly
 
         private float lastUpkeepRatio;
         private bool interceptedThisTick;
+        // See agent-besiege-mod-guide.md's "注册时序规范" — retried each tick until it
+        // succeeds, since ShipState may not exist yet when this OnSimulateStart runs.
+        private bool registered;
 
         private GameObject visObject;
         private MeshFilter visMeshFilter;
@@ -53,6 +56,7 @@ namespace BeyondSpiderAssembly
             if (ship != null)
             {
                 SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Shields);
+                registered = true;
             }
             InitVisual();
         }
@@ -64,6 +68,7 @@ namespace BeyondSpiderAssembly
             {
                 SpaceCombatRegistry.RemoveSubsystem(this, ship.Shields);
             }
+            registered = false;
             if (visObject != null)
             {
                 Destroy(visObject);
@@ -74,6 +79,11 @@ namespace BeyondSpiderAssembly
         public override void SimulateFixedUpdateHost()
         {
             ShipState ship = OwnShip();
+            if (ship != null && !registered)
+            {
+                SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Shields);
+                registered = true;
+            }
             if (ship == null)
             {
                 return;

@@ -84,6 +84,10 @@ namespace BeyondSpiderAssembly
 
         public int GuidHash { get; private set; }
 
+        // See agent-besiege-mod-guide.md's "注册时序规范" — retried each tick until it
+        // succeeds, since ShipState may not exist yet when this OnSimulateStart runs.
+        private bool registered;
+
         private readonly List<string> typeList = new List<string>
         {
             "1x20mm",
@@ -172,6 +176,7 @@ namespace BeyondSpiderAssembly
             if (ship != null)
             {
                 SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.FlakTurrets);
+                registered = true;
             }
 
             if (!StatMaster.isClient)
@@ -196,6 +201,7 @@ namespace BeyondSpiderAssembly
             {
                 SpaceCombatRegistry.RemoveSubsystem(this, ship.FlakTurrets);
             }
+            registered = false;
 
             SpaceFlakTurretBlock buildBlock = BlockBehaviour.BuildingBlock == null ? null : BlockBehaviour.BuildingBlock.GetComponent<SpaceFlakTurretBlock>();
             if (buildBlock != null)
@@ -229,6 +235,16 @@ namespace BeyondSpiderAssembly
 
         public override void SimulateFixedUpdateHost()
         {
+            if (!registered)
+            {
+                ShipState ship = OwnShip();
+                if (ship != null)
+                {
+                    SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.FlakTurrets);
+                    registered = true;
+                }
+            }
+
             UpdateFireControlTarget();
             DriveTurret();
             SyncStateIfNeeded();

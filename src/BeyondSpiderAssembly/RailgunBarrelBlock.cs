@@ -19,6 +19,9 @@ namespace BeyondSpiderAssembly
         private float reloadTime;
         private float reload;
         private bool manualFireQueued;
+        // See agent-besiege-mod-guide.md's "注册时序规范" — retried each tick until it
+        // succeeds, since ShipState may not exist yet when this OnSimulateStart runs.
+        private bool registered;
 
         public override void SafeAwake()
         {
@@ -41,6 +44,7 @@ namespace BeyondSpiderAssembly
             if (ship != null)
             {
                 SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Guns);
+                registered = true;
             }
         }
 
@@ -51,6 +55,7 @@ namespace BeyondSpiderAssembly
             {
                 SpaceCombatRegistry.RemoveSubsystem(this, ship.Guns);
             }
+            registered = false;
         }
 
         public override void SimulateUpdateHost()
@@ -63,6 +68,16 @@ namespace BeyondSpiderAssembly
 
         public override void SimulateFixedUpdateHost()
         {
+            if (!registered)
+            {
+                ShipState ship = OwnShip();
+                if (ship != null)
+                {
+                    SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Guns);
+                    registered = true;
+                }
+            }
+
             reload = Mathf.Min(reloadTime, reload + Time.fixedDeltaTime);
             if (manualFireQueued)
             {
@@ -208,6 +223,10 @@ namespace BeyondSpiderAssembly
 
         public int GuidHash { get; private set; }
 
+        // See agent-besiege-mod-guide.md's "注册时序规范" — retried each tick until it
+        // succeeds, since ShipState may not exist yet when this OnSimulateStart runs.
+        private bool registered;
+
         private const float BindRefreshInterval = 0.5f;
         private const float ActiveIconSize = 44f;
         private const float ActiveIconWorldOffset = 0.45f;
@@ -249,6 +268,7 @@ namespace BeyondSpiderAssembly
             if (ship != null)
             {
                 SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Gunners);
+                registered = true;
             }
             SpaceGunnerNet.Instance.Register(this);
             RefreshBindings(true);
@@ -264,6 +284,7 @@ namespace BeyondSpiderAssembly
             {
                 SpaceCombatRegistry.RemoveSubsystem(this, ship.Gunners);
             }
+            registered = false;
         }
 
         public override void SimulateUpdateHost()
@@ -285,6 +306,13 @@ namespace BeyondSpiderAssembly
 
         public override void SimulateFixedUpdateHost()
         {
+            ShipState ship = OwnShip();
+            if (ship != null && !registered)
+            {
+                SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Gunners);
+                registered = true;
+            }
+
             if (!active)
             {
                 StopFireEmulation();
@@ -292,7 +320,6 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
-            ShipState ship = OwnShip();
             if (ship == null)
             {
                 StopFireEmulation();

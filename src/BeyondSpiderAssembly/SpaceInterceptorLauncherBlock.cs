@@ -14,6 +14,9 @@ namespace BeyondSpiderAssembly
         private float reload;
         private float reloadTime = 3f;
         private bool manualLaunchQueued;
+        // See agent-besiege-mod-guide.md's "注册时序规范" — retried each tick until it
+        // succeeds, since ShipState may not exist yet when this OnSimulateStart runs.
+        private bool registered;
 
         public override void SafeAwake()
         {
@@ -36,6 +39,7 @@ namespace BeyondSpiderAssembly
             if (ship != null)
             {
                 SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Launchers);
+                registered = true;
             }
         }
 
@@ -46,6 +50,7 @@ namespace BeyondSpiderAssembly
             {
                 SpaceCombatRegistry.RemoveSubsystem(this, ship.Launchers);
             }
+            registered = false;
         }
 
         public override void SimulateUpdateHost()
@@ -60,6 +65,11 @@ namespace BeyondSpiderAssembly
         {
             reload = Mathf.Min(reloadTime, reload + Time.fixedDeltaTime);
             ShipState ship = OwnShip();
+            if (ship != null && !registered)
+            {
+                SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Launchers);
+                registered = true;
+            }
             bool manual = manualLaunchQueued;
             manualLaunchQueued = false;
             if (!manual && (!AutoLaunch.IsActive || ship == null || ship.DefensiveSolution.Target == null))
