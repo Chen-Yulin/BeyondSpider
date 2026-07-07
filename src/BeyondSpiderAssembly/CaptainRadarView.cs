@@ -18,8 +18,8 @@ namespace BeyondSpiderAssembly
         // at this magnitude — 500,000 previously caused ~6cm/frame jitter on the orbiting camera.
         private const float PocketOriginHeight = 5000f;
         private const float DisplayRadius = 4f;
-        private const int RingCount = 8;
-        private const int SegmentCount = 32;
+        private const int RingCount = 4;
+        private const int SegmentCount = 64;
         private const float MarkerColliderRadius = 0.3f;
         private const float MarkerScale = 0.3f;
         private const float PanelSize = 420f;

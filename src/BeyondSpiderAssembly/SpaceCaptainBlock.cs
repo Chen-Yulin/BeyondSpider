@@ -41,6 +41,12 @@ namespace BeyondSpiderAssembly
             {
                 ship.Captain = null;
             }
+
+            int localPlayer = StatMaster.isMP ? PlayerData.localPlayer.networkId : 0;
+            if (PlayerID == localPlayer && CaptainRadarView.Instance != null)
+            {
+                CaptainRadarView.Instance.SetOpen(false);
+            }
         }
 
         public override void SimulateUpdateHost()
@@ -65,6 +71,19 @@ namespace BeyondSpiderAssembly
             if (ship == null)
             {
                 return;
+            }
+
+            // Self-heals against block init order: if SpaceShipCore's OnSimulateStart (which creates
+            // the ShipState) happens to run after this block's own OnSimulateStart — always the case
+            // when loading a save, where every block starts simulating in whatever order the engine
+            // iterates the machine, unlike incrementally placing a Captain onto an already-simulating
+            // ship — OwnShip() returned null there and ship.Captain was never set. This tick keeps
+            // retrying every frame until it succeeds, and only applies the default priority once, on
+            // first claim, so it never fights a player's later manual SwitchPriority toggle.
+            if (ship.Captain != this)
+            {
+                ship.Captain = this;
+                ship.Priority = DefaultAntiAir.IsActive ? CommandPriority.AntiAir : CommandPriority.AntiShip;
             }
 
             ship.LockedSolution = default(FireSolution);
