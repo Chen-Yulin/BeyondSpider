@@ -25,6 +25,8 @@ namespace BeyondSpiderAssembly
         private const float ZoomStep = 1.15f;
         private const float OrbitSpeed = 3f;
         private const float ClickPixelThreshold = 4f;
+        private const float RingStepBase = 10f;
+        private const float RingStepRatio = 5f;
 
         public bool IsOpen;
         public float MetersPerUnit = 50f;
@@ -243,6 +245,23 @@ namespace BeyondSpiderAssembly
             return target;
         }
 
+        // Snaps the continuous, scroll-driven MetersPerUnit to the nearest "nice" ring step from
+        // the geometric family RingStepBase * RingStepRatio^n (10, 50, 250, 1250, ...), so the grid
+        // always reads in round numbers, Blender-viewport style, instead of an arbitrary float.
+        private float ComputeRingStepMeters()
+        {
+            float desiredRingStep = MetersPerUnit * DisplayRadius / RingCount;
+            float n = Mathf.Round(Mathf.Log(desiredRingStep / RingStepBase, RingStepRatio));
+            return RingStepBase * Mathf.Pow(RingStepRatio, n);
+        }
+
+        // The scale actually used to place markers — derived from the same snapped ring step the
+        // grid label shows, so a target's on-screen position always matches what the rings say.
+        private float EffectiveMetersPerUnit()
+        {
+            return ComputeRingStepMeters() * RingCount / DisplayRadius;
+        }
+
         private void SyncMarkers()
         {
             ShipState ship = OwnShipState();
@@ -278,7 +297,7 @@ namespace BeyondSpiderAssembly
                 marker.SetActive(true);
 
                 Vector3 relative = captain.InverseTransformVector(track.Position - captain.position);
-                Vector3 displayPos = relative / MetersPerUnit;
+                Vector3 displayPos = relative / EffectiveMetersPerUnit();
                 if (displayPos.magnitude > DisplayRadius)
                 {
                     displayPos = displayPos.normalized * DisplayRadius;
@@ -459,7 +478,7 @@ namespace BeyondSpiderAssembly
 
             Rect rect = GetPanelRect();
             GUI.DrawTexture(rect, radarTexture);
-            float ringMeters = MetersPerUnit * DisplayRadius / RingCount;
+            float ringMeters = ComputeRingStepMeters();
             GUI.Label(new Rect(rect.x, rect.y - 20f, rect.width, 20f), "1 ring = " + ringMeters.ToString("0") + "m");
         }
     }
