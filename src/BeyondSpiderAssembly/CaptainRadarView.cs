@@ -255,6 +255,16 @@ namespace BeyondSpiderAssembly
             Transform captain = ship.Captain.transform;
             seen.Clear();
 
+            if (ship.Core != null)
+            {
+                seen.Add(ship.Core);
+                GameObject selfMarker = GetOrCreateMarker(ship.Core, TrackKind.Ship);
+                selfMarker.SetActive(true);
+                selfMarker.transform.localPosition = Vector3.zero;
+                selfMarker.transform.localRotation = Quaternion.identity;
+                selfMarker.GetComponent<Renderer>().material.SetColor("_TintColor", Color.green);
+            }
+
             for (int i = 0; i < ship.Tracks.Count; i++)
             {
                 SensorTrack track = ship.Tracks[i];

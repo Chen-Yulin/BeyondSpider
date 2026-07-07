@@ -62,7 +62,14 @@ namespace BeyondSpiderAssembly
             for (int i = 0; i < targets.Count; i++)
             {
                 ITrackable target = targets[i];
-                if (target == null || !target.IsAlive || target.PlayerID == PlayerID)
+                if (target == null || !target.IsAlive)
+                {
+                    continue;
+                }
+                // Skip our own ship (redundant with CaptainRadarView's always-on self marker at the
+                // origin), but let our own launched heavy missiles through so the captain can watch
+                // them fly toward the target on the radar screen.
+                if (target.PlayerID == PlayerID && target.Kind == TrackKind.Ship)
                 {
                     continue;
                 }
