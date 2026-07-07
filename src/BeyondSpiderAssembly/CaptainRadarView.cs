@@ -13,7 +13,10 @@ namespace BeyondSpiderAssembly
     {
         public override string Name { get { return "BeyondSpider Captain Radar View"; } }
 
-        private const float PocketOriginHeight = 500000f;
+        // Far enough that no real gameplay content (Besiege's build/play area is nowhere near this
+        // far out) can ever land here, but small enough that float32 precision stays sub-millimeter
+        // at this magnitude — 500,000 previously caused ~6cm/frame jitter on the orbiting camera.
+        private const float PocketOriginHeight = 5000f;
         private const float DisplayRadius = 4f;
         private const int RingCount = 8;
         private const int SegmentCount = 32;
