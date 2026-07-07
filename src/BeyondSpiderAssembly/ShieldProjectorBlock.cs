@@ -24,7 +24,7 @@ namespace BeyondSpiderAssembly
         private MeshRenderer visRenderer;
         private float builtRadius = -1f;
         private float builtDepth = -1f;
-        private float builtheight = -1f;
+        private float builtHeight = -1f;
         private float flashLevel;
 
         public MSlider Radius;
@@ -182,8 +182,8 @@ namespace BeyondSpiderAssembly
         }
         private void PlaceMesh()
         {
-            builtheight = Height.Value;
-            visObject.transform.localPosition.Set(0, 0, Height.Value);
+            visObject.transform.localPosition = new Vector3(0f, 0f, Height.Value);
+            builtHeight = Height.Value;
         }
 
         private void RebuildMesh()
@@ -257,7 +257,7 @@ namespace BeyondSpiderAssembly
             {
                 RebuildMesh();
             }
-            if (Mathf.Abs(Height.Value - builtheight) > 0.1f)
+            if (Mathf.Abs(Height.Value - builtHeight) > 0.1f)
             {
                 PlaceMesh();
             }
