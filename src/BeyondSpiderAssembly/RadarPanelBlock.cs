@@ -17,7 +17,6 @@ namespace BeyondSpiderAssembly
             gameObject.name = "BeyondSpider Radar Panel";
             Range = AddSlider("Range", "BSRadarRange", 850f, 100f, 3000f);
             ConeAngle = AddSlider("Cone Angle", "BSConeAngle", 65f, 10f, 170f);
-            Iff = AddToggle("IFF", "BSIFF", true);
         }
 
         public override void OnSimulateStart()
