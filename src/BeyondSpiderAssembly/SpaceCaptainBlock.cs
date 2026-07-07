@@ -9,6 +9,12 @@ namespace BeyondSpiderAssembly
         public MKey SwitchPriority;
         public MToggle DefaultAntiAir;
 
+        private const float FireControlPositionBucket = 10f;
+        private const float FireControlVelocityBucket = 10f;
+
+        private readonly Dictionary<string, FireSolution> lockedFireSolutionCache = new Dictionary<string, FireSolution>();
+        private float lockedFireSolutionCacheTime = -1f;
+
         public override void SafeAwake()
         {
             base.SafeAwake();
@@ -79,6 +85,70 @@ namespace BeyondSpiderAssembly
                 ship.LockedSolution.TimeToImpact = track.TimeToImpact;
                 break;
             }
+        }
+
+        public bool TryGetLockedFireSolution(Vector3 approximateMuzzlePosition, float muzzleVelocity, out FireSolution solution)
+        {
+            solution = default(FireSolution);
+            ShipState ship = OwnShip();
+            if (ship == null || ship.LockedTarget == null || !ship.LockedTarget.IsAlive)
+            {
+                return false;
+            }
+
+            SensorTrack lockedTrack;
+            if (!TryGetLockedTrack(ship, out lockedTrack))
+            {
+                return false;
+            }
+
+            if (!Mathf.Approximately(lockedFireSolutionCacheTime, Time.fixedTime))
+            {
+                lockedFireSolutionCache.Clear();
+                lockedFireSolutionCacheTime = Time.fixedTime;
+            }
+
+            Vector3 localPosition = transform.InverseTransformPoint(approximateMuzzlePosition);
+            int bucketX = Mathf.RoundToInt(localPosition.x / FireControlPositionBucket);
+            int bucketY = Mathf.RoundToInt(localPosition.y / FireControlPositionBucket);
+            int bucketZ = Mathf.RoundToInt(localPosition.z / FireControlPositionBucket);
+            int velocityBucket = Mathf.Max(1, Mathf.RoundToInt(muzzleVelocity / FireControlVelocityBucket));
+            string key = bucketX.ToString() + ":" + bucketY.ToString() + ":" + bucketZ.ToString() + ":" + velocityBucket.ToString();
+
+            if (lockedFireSolutionCache.TryGetValue(key, out solution))
+            {
+                return solution.Target != null;
+            }
+
+            Vector3 bucketLocal = new Vector3(
+                bucketX * FireControlPositionBucket,
+                bucketY * FireControlPositionBucket,
+                bucketZ * FireControlPositionBucket);
+            Vector3 bucketWorld = transform.TransformPoint(bucketLocal);
+            float quantizedVelocity = velocityBucket * FireControlVelocityBucket;
+            float time = SpaceBallistics.EstimateInterceptTime(bucketWorld, lockedTrack.Position, lockedTrack.Velocity, quantizedVelocity);
+
+            solution.Target = lockedTrack.Target;
+            solution.TimeToImpact = time;
+            solution.AimPoint = lockedTrack.Position + lockedTrack.Velocity * Mathf.Clamp(time, 0f, 8f);
+            solution.Priority = 1f;
+            lockedFireSolutionCache.Add(key, solution);
+            return true;
+        }
+
+        private static bool TryGetLockedTrack(ShipState ship, out SensorTrack lockedTrack)
+        {
+            lockedTrack = default(SensorTrack);
+            for (int i = 0; i < ship.Tracks.Count; i++)
+            {
+                SensorTrack track = ship.Tracks[i];
+                if (ReferenceEquals(track.Target, ship.LockedTarget))
+                {
+                    lockedTrack = track;
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
