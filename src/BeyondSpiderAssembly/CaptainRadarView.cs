@@ -39,6 +39,7 @@ namespace BeyondSpiderAssembly
 
         private Transform pocketRoot;
         private Transform gimbal;
+        private Transform gridTransform;
         private Camera radarCamera;
         private RenderTexture radarTexture;
         private GameObject lockIcon;
@@ -92,6 +93,7 @@ namespace BeyondSpiderAssembly
             gridObject.transform.SetParent(pocketRoot, false);
             gridObject.transform.localPosition = Vector3.zero;
             gridObject.transform.localRotation = Quaternion.identity;
+            gridTransform = gridObject.transform;
 
             List<Vector3> vertices = new List<Vector3>();
             List<int> lines = new List<int>();
@@ -255,11 +257,28 @@ namespace BeyondSpiderAssembly
             return RingStepBase * Mathf.Pow(RingStepRatio, n);
         }
 
-        // The scale actually used to place markers — derived from the same snapped ring step the
-        // grid label shows, so a target's on-screen position always matches what the rings say.
+        // What MetersPerUnit would need to be for the current ring step to exactly fill the grid's
+        // built radius — used only to derive the grid's continuous visual scale below. Markers are
+        // NOT positioned from this; they use the raw, unsnapped MetersPerUnit so they always sit at
+        // their true relative distance while the grid smoothly grows/shrinks underneath them.
         private float EffectiveMetersPerUnit()
         {
             return ComputeRingStepMeters() * RingCount / DisplayRadius;
+        }
+
+        // Grid mesh is built once at a fixed radius meaning "RingStepBase * RingStepRatio^n" per
+        // ring; its uniform scale continuously tracks how far the raw zoom has drifted from that
+        // built meaning, so it visibly grows/shrinks as the player scrolls. The scale jumps by
+        // exactly RingStepRatio the instant the ring step itself snaps to the next tier, which is
+        // the Blender-style "grid resets size right as the labels change" sensation.
+        private void UpdateGridScale()
+        {
+            if (gridTransform == null)
+            {
+                return;
+            }
+            float scale = EffectiveMetersPerUnit() / MetersPerUnit;
+            gridTransform.localScale = Vector3.one * scale;
         }
 
         private void SyncMarkers()
@@ -297,7 +316,7 @@ namespace BeyondSpiderAssembly
                 marker.SetActive(true);
 
                 Vector3 relative = captain.InverseTransformVector(track.Position - captain.position);
-                Vector3 displayPos = relative / EffectiveMetersPerUnit();
+                Vector3 displayPos = relative / MetersPerUnit;
                 if (displayPos.magnitude > DisplayRadius)
                 {
                     displayPos = displayPos.normalized * DisplayRadius;
@@ -378,6 +397,7 @@ namespace BeyondSpiderAssembly
 
             Rect rect = GetPanelRect();
             HandleOrbitAndZoom(rect);
+            UpdateGridScale();
             HandleClick(rect);
             SyncMarkers();
         }
