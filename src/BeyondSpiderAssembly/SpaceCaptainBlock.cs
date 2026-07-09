@@ -8,6 +8,7 @@ namespace BeyondSpiderAssembly
     {
         public MKey SwitchPriority;
         public MToggle DefaultAntiAir;
+        public MToggle Iff;
 
         private const float FireControlPositionBucket = 10f;
         private const float FireControlVelocityBucket = 10f;
@@ -21,6 +22,7 @@ namespace BeyondSpiderAssembly
             gameObject.name = "BeyondSpider Captain";
             SwitchPriority = AddKey("Switch Priority", "BSCaptainSwitchPriority", KeyCode.T);
             DefaultAntiAir = AddToggle("Default Anti-Air", "BSCaptainDefaultAntiAir", true);
+            Iff = AddToggle("IFF", "BSCaptainIFF", true);
         }
 
         public override void OnSimulateStart()
@@ -92,18 +94,23 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
-            for (int i = 0; i < ship.Tracks.Count; i++)
+            SensorTrack lockedTrack;
+            if (TryGetLockedTrack(ship, out lockedTrack))
             {
-                SensorTrack track = ship.Tracks[i];
-                if (!ReferenceEquals(track.Target, ship.LockedTarget))
-                {
-                    continue;
-                }
-                ship.LockedSolution.Target = track.Target;
-                ship.LockedSolution.AimPoint = track.Position + track.Velocity * Mathf.Clamp(track.TimeToImpact, 0f, 2f);
-                ship.LockedSolution.TimeToImpact = track.TimeToImpact;
-                break;
+                ship.LockedSolution.Target = lockedTrack.Target;
+                ship.LockedSolution.AimPoint = lockedTrack.Position + lockedTrack.Velocity * Mathf.Clamp(lockedTrack.TimeToImpact, 0f, 2f);
+                ship.LockedSolution.TimeToImpact = lockedTrack.TimeToImpact;
             }
+        }
+
+        public bool CanCommandLockedFireAt(ITrackable target)
+        {
+            if (target == null)
+            {
+                return false;
+            }
+
+            return !Iff.IsActive || SpaceBallistics.IsHostile(this, target);
         }
 
         public bool TryGetLockedFireSolution(Vector3 approximateMuzzlePosition, float muzzleVelocity, out FireSolution solution)

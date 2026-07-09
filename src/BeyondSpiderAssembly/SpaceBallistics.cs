@@ -106,8 +106,13 @@ namespace BeyondSpiderAssembly
 
         public static void PlayMuzzleSound(Transform origin, float caliber)
         {
+            PlayMuzzleSound(origin.position, caliber);
+        }
+
+        public static void PlayMuzzleSound(Vector3 point, float caliber)
+        {
             GameObject sound = new GameObject("BeyondSpider Railgun Muzzle Sound");
-            sound.transform.position = origin.position;
+            sound.transform.position = point;
             AudioSource audioSource = sound.AddComponent<AudioSource>();
             audioSource.clip = ModResource.GetAudioClip("BS Migrated GunShot Audio");
             audioSource.spatialBlend = 1f;
@@ -307,11 +312,12 @@ namespace BeyondSpiderAssembly
                 float sweepDistance = body.velocity.magnitude * Time.fixedDeltaTime;
                 if (sweepDistance > 0f)
                 {
+                    transform.rotation = Quaternion.LookRotation(body.velocity.normalized, Vector3.up);
                     RaycastHit hit;
-                    Ray ray = new Ray(transform.position, body.velocity);
+                    Ray ray = new Ray(transform.position, transform.forward);
                     if (Physics.Raycast(ray, out hit, sweepDistance))
                     {
-                        ResolveHit(hit.collider);
+                        ResolveHit(hit.collider, hit.point);
                     }
                 }
             }
@@ -319,10 +325,15 @@ namespace BeyondSpiderAssembly
 
         private void OnCollisionEnter(Collision collision)
         {
-            ResolveHit(collision.collider);
+            Vector3 hitPoint = transform.position;
+            if (collision.contacts != null && collision.contacts.Length > 0)
+            {
+                hitPoint = collision.contacts[0].point;
+            }
+            ResolveHit(collision.collider, hitPoint);
         }
 
-        private void ResolveHit(Collider hitCollider)
+        private void ResolveHit(Collider hitCollider, Vector3 hitPoint)
         {
             float damage = CurrentDamage;
             HeavyNuclearMissileBlock missile = hitCollider.GetComponentInParent<HeavyNuclearMissileBlock>();
@@ -333,7 +344,7 @@ namespace BeyondSpiderAssembly
             DamageRouter.RoutePhysicalHit(hitCollider, damage);
             if (SpawnImpactSpark)
             {
-                SpaceEffectAssets.PlayPierceEffect(transform.position, Caliber);
+                SpaceEffectAssets.PlayPierceEffect(hitPoint, Caliber);
             }
             Destroy(gameObject);
         }

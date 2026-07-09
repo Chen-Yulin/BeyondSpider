@@ -343,6 +343,10 @@ namespace BeyondSpiderAssembly
             GUILayout.BeginArea(window, "BeyondSpider Space Combat", GUI.skin.window);
             GUILayout.Label("Core: " + ship.Core.DisplayName);
             GUILayout.Label("Captain priority: " + ship.Priority);
+            if (ship.Captain != null)
+            {
+                GUILayout.Label("Captain IFF: " + (ship.Captain.Iff.IsActive ? "on" : "off"));
+            }
             GUILayout.Label("Total power MW: " + ship.Energy.ReactorOutput.ToString("0"));
             GUILayout.Label("Power share A/S/W: " + FormatPowerShare(ship, EnergyBus.Armor)
                 + " / " + FormatPowerShare(ship, EnergyBus.Shield)

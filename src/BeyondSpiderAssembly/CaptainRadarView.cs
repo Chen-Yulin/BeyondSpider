@@ -30,12 +30,21 @@ namespace BeyondSpiderAssembly
         private const float ClickPixelThreshold = 4f;
         private const float RingStepBase = 10f;
         private const float RingStepRatio = 5f;
+        private const int RadarTextureSize = 512;
+        private const int RadarTextureAntiAliasing = 4;
+        private const float OriginMarkerScale = 2f;
+        private const float RadarBloomAlpha = 0.16f;
+        private const float RadarBloomOffset = 1.5f;
 
         public bool IsOpen;
         public float MetersPerUnit = 50f;
 
         private bool orbiting;
         private bool leftDownInRect;
+        private bool radarOwnsMouse;
+        private bool mouseOrbitPaused;
+        private bool mouseOrbitWasEnabled;
+        private bool cameraSnapshotActive;
         private Vector2 mouseDownPos;
         private float yaw;
         private float pitch = 25f;
@@ -45,6 +54,13 @@ namespace BeyondSpiderAssembly
         private Transform gridTransform;
         private Camera radarCamera;
         private RenderTexture radarTexture;
+        private Camera guardedGameCamera;
+        private MouseOrbit guardedMouseOrbit;
+        private Vector3 guardedCameraPosition;
+        private Quaternion guardedCameraRotation;
+        private float guardedCameraFieldOfView;
+        private float guardedCameraOrthographicSize;
+        private Material markerMaterial;
         private GameObject lockIcon;
         private Mesh arrowMesh;
 
@@ -82,7 +98,9 @@ namespace BeyondSpiderAssembly
             radarCamera.backgroundColor = new Color(0.02f, 0.05f, 0.03f);
             radarCamera.nearClipPlane = 0.1f;
             radarCamera.farClipPlane = 100f;
-            radarTexture = new RenderTexture(512, 512, 16);
+            radarTexture = new RenderTexture(RadarTextureSize, RadarTextureSize, 16);
+            radarTexture.antiAliasing = RadarTextureAntiAliasing;
+            radarTexture.filterMode = FilterMode.Bilinear;
             radarCamera.targetTexture = radarTexture;
             radarCamera.enabled = false;
 
@@ -170,6 +188,39 @@ namespace BeyondSpiderAssembly
             return mesh;
         }
 
+        private Material MarkerMaterial()
+        {
+            if (markerMaterial == null)
+            {
+                Shader shader = Shader.Find("Unlit/Color");
+                if (shader == null)
+                {
+                    shader = Shader.Find("Particles/Additive");
+                }
+
+                markerMaterial = new Material(shader);
+            }
+
+            return markerMaterial;
+        }
+
+        private static void SetRendererColor(Renderer renderer, Color color)
+        {
+            if (renderer == null || renderer.material == null)
+            {
+                return;
+            }
+
+            if (renderer.material.HasProperty("_Color"))
+            {
+                renderer.material.SetColor("_Color", color);
+            }
+            if (renderer.material.HasProperty("_TintColor"))
+            {
+                renderer.material.SetColor("_TintColor", color);
+            }
+        }
+
         private GameObject CreateMarker(TrackKind kind)
         {
             GameObject marker;
@@ -179,13 +230,14 @@ namespace BeyondSpiderAssembly
                 MeshFilter filter = marker.AddComponent<MeshFilter>();
                 filter.sharedMesh = arrowMesh;
                 MeshRenderer renderer = marker.AddComponent<MeshRenderer>();
-                renderer.material = new Material(Shader.Find("Particles/Additive"));
+                renderer.material = MarkerMaterial();
             }
             else
             {
                 marker = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                 marker.name = "BS Radar Missile Marker";
                 Object.DestroyImmediate(marker.GetComponent<Collider>());
+                marker.GetComponent<Renderer>().material = MarkerMaterial();
             }
 
             marker.transform.SetParent(pocketRoot, false);
@@ -284,6 +336,16 @@ namespace BeyondSpiderAssembly
             gridTransform.localScale = Vector3.one * scale;
         }
 
+        private static Vector3 CaptainLocalToRadarSpace(Vector3 local)
+        {
+            return new Vector3(local.x, local.z, -local.y);
+        }
+
+        private static Vector3 ProjectDirectionToRadarPlane(Vector3 radarDirection)
+        {
+            return new Vector3(radarDirection.x, 0f, radarDirection.z);
+        }
+
         private void SyncMarkers()
         {
             ShipState ship = OwnShipState();
@@ -303,7 +365,8 @@ namespace BeyondSpiderAssembly
                 selfMarker.SetActive(true);
                 selfMarker.transform.localPosition = Vector3.zero;
                 selfMarker.transform.localRotation = Quaternion.identity;
-                selfMarker.GetComponent<Renderer>().material.SetColor("_TintColor", Color.green);
+                selfMarker.transform.localScale = Vector3.one * MarkerScale * OriginMarkerScale;
+                SetRendererColor(selfMarker.GetComponent<Renderer>(), Color.green);
             }
 
             for (int i = 0; i < ship.Tracks.Count; i++)
@@ -317,8 +380,9 @@ namespace BeyondSpiderAssembly
                 seen.Add(track.Target);
                 GameObject marker = GetOrCreateMarker(track.Target, track.Kind);
                 marker.SetActive(true);
+                marker.transform.localScale = Vector3.one * MarkerScale;
 
-                Vector3 relative = captain.InverseTransformVector(track.Position - captain.position);
+                Vector3 relative = CaptainLocalToRadarSpace(captain.InverseTransformVector(track.Position - captain.position));
                 Vector3 displayPos = relative / MetersPerUnit;
                 if (displayPos.magnitude > DisplayRadius)
                 {
@@ -328,22 +392,14 @@ namespace BeyondSpiderAssembly
 
                 if (track.Kind == TrackKind.Ship)
                 {
-                    Vector3 velLocal = captain.InverseTransformDirection(track.Velocity);
+                    Vector3 velLocal = ProjectDirectionToRadarPlane(CaptainLocalToRadarSpace(captain.InverseTransformDirection(track.Velocity)));
                     marker.transform.localRotation = velLocal.sqrMagnitude > 0.01f
                         ? Quaternion.LookRotation(velLocal.normalized, Vector3.up)
                         : Quaternion.identity;
                 }
 
                 Color color = SpaceBallistics.IsHostile(ship.Captain, track.Target) ? Color.red : Color.green;
-                Renderer renderer = marker.GetComponent<Renderer>();
-                if (track.Kind == TrackKind.Ship)
-                {
-                    renderer.material.SetColor("_TintColor", color);
-                }
-                else
-                {
-                    renderer.material.color = color;
-                }
+                SetRendererColor(marker.GetComponent<Renderer>(), color);
             }
 
             stale.Clear();
@@ -375,6 +431,12 @@ namespace BeyondSpiderAssembly
         public void SetOpen(bool open)
         {
             IsOpen = open;
+            if (!open)
+            {
+                orbiting = false;
+                leftDownInRect = false;
+                SetRadarOwnsMouse(false);
+            }
             if (radarCamera != null)
             {
                 radarCamera.enabled = open;
@@ -395,14 +457,123 @@ namespace BeyondSpiderAssembly
         {
             if (!IsOpen)
             {
+                SetRadarOwnsMouse(false);
                 return;
             }
 
             Rect rect = GetPanelRect();
+            SetRadarOwnsMouse(MouseIsOwnedByRadar(rect));
             HandleOrbitAndZoom(rect);
             UpdateGridScale();
             HandleClick(rect);
             SyncMarkers();
+        }
+
+        private void LateUpdate()
+        {
+            if (cameraSnapshotActive && radarOwnsMouse)
+            {
+                RestoreGameCameraSnapshot();
+            }
+        }
+
+        private bool MouseIsOwnedByRadar(Rect rect)
+        {
+            return rect.Contains(FlippedMouse()) || orbiting || leftDownInRect;
+        }
+
+        private void SetRadarOwnsMouse(bool ownsMouse)
+        {
+            if (radarOwnsMouse == ownsMouse)
+            {
+                return;
+            }
+
+            radarOwnsMouse = ownsMouse;
+            if (radarOwnsMouse)
+            {
+                CaptureGameCameraSnapshot();
+                PauseGameCameraInput();
+            }
+            else
+            {
+                RestoreGameCameraSnapshot();
+                cameraSnapshotActive = false;
+                ResumeGameCameraInput();
+            }
+        }
+
+        private void CaptureGameCameraSnapshot()
+        {
+            Camera gameCamera = Camera.main;
+            if (gameCamera == null || gameCamera == radarCamera)
+            {
+                cameraSnapshotActive = false;
+                guardedGameCamera = null;
+                return;
+            }
+
+            guardedGameCamera = gameCamera;
+            guardedCameraPosition = gameCamera.transform.position;
+            guardedCameraRotation = gameCamera.transform.rotation;
+            guardedCameraFieldOfView = gameCamera.fieldOfView;
+            guardedCameraOrthographicSize = gameCamera.orthographicSize;
+            cameraSnapshotActive = true;
+        }
+
+        private void RestoreGameCameraSnapshot()
+        {
+            if (!cameraSnapshotActive || guardedGameCamera == null)
+            {
+                return;
+            }
+
+            guardedGameCamera.transform.position = guardedCameraPosition;
+            guardedGameCamera.transform.rotation = guardedCameraRotation;
+            guardedGameCamera.fieldOfView = guardedCameraFieldOfView;
+            guardedGameCamera.orthographicSize = guardedCameraOrthographicSize;
+        }
+
+        private void PauseGameCameraInput()
+        {
+            guardedMouseOrbit = FindGameMouseOrbit();
+            if (guardedMouseOrbit == null)
+            {
+                return;
+            }
+
+            mouseOrbitWasEnabled = guardedMouseOrbit.enabled;
+            if (mouseOrbitWasEnabled)
+            {
+                guardedMouseOrbit.enabled = false;
+                mouseOrbitPaused = true;
+            }
+        }
+
+        private void ResumeGameCameraInput()
+        {
+            if (mouseOrbitPaused && guardedMouseOrbit != null)
+            {
+                guardedMouseOrbit.enabled = mouseOrbitWasEnabled;
+            }
+
+            mouseOrbitPaused = false;
+            guardedMouseOrbit = null;
+        }
+
+        private MouseOrbit FindGameMouseOrbit()
+        {
+            Camera gameCamera = Camera.main;
+            if (gameCamera != null && gameCamera != radarCamera)
+            {
+                MouseOrbit orbit = gameCamera.GetComponent<MouseOrbit>();
+                if (orbit != null)
+                {
+                    return orbit;
+                }
+            }
+
+            return Object.FindObjectOfType(typeof(MouseOrbit)) as MouseOrbit;
         }
 
         private void HandleOrbitAndZoom(Rect rect)
@@ -483,6 +654,10 @@ namespace BeyondSpiderAssembly
             {
                 return;
             }
+            if (ReferenceEquals(target, ship.Core))
+            {
+                return;
+            }
 
             bool willLock = !ReferenceEquals(ship.LockedTarget, target);
             ship.LockedTarget = willLock ? target : null;
@@ -500,9 +675,61 @@ namespace BeyondSpiderAssembly
             }
 
             Rect rect = GetPanelRect();
-            GUI.DrawTexture(rect, radarTexture);
+            ConsumePanelMouseEvent(rect);
+            DrawRadarTexture(rect);
             float ringMeters = ComputeRingStepMeters();
             GUI.Label(new Rect(rect.x, rect.y - 20f, rect.width, 20f), "1 ring = " + ringMeters.ToString("0") + "m");
+        }
+
+        private void DrawRadarTexture(Rect rect)
+        {
+            Color previousColor = GUI.color;
+            GUI.color = new Color(1f, 1f, 1f, RadarBloomAlpha);
+            DrawRadarBloomPass(rect, -RadarBloomOffset, 0f);
+            DrawRadarBloomPass(rect, RadarBloomOffset, 0f);
+            DrawRadarBloomPass(rect, 0f, -RadarBloomOffset);
+            DrawRadarBloomPass(rect, 0f, RadarBloomOffset);
+            GUI.color = new Color(1f, 1f, 1f, RadarBloomAlpha * 0.6f);
+            DrawRadarBloomPass(rect, -RadarBloomOffset, -RadarBloomOffset);
+            DrawRadarBloomPass(rect, RadarBloomOffset, -RadarBloomOffset);
+            DrawRadarBloomPass(rect, -RadarBloomOffset, RadarBloomOffset);
+            DrawRadarBloomPass(rect, RadarBloomOffset, RadarBloomOffset);
+            GUI.color = previousColor;
+            GUI.DrawTexture(rect, radarTexture);
+        }
+
+        private void DrawRadarBloomPass(Rect rect, float xOffset, float yOffset)
+        {
+            GUI.DrawTexture(new Rect(rect.x + xOffset, rect.y + yOffset, rect.width, rect.height), radarTexture);
+        }
+
+        private void ConsumePanelMouseEvent(Rect rect)
+        {
+            Event evt = Event.current;
+            if (evt == null)
+            {
+                return;
+            }
+
+            bool overPanel = rect.Contains(evt.mousePosition);
+            bool activeDrag = orbiting || leftDownInRect;
+            if (!overPanel && !activeDrag)
+            {
+                return;
+            }
+
+            if (evt.type == EventType.MouseDown
+                || evt.type == EventType.MouseUp
+                || evt.type == EventType.MouseDrag
+                || evt.type == EventType.ScrollWheel)
+            {
+                evt.Use();
+            }
+        }
+
+        private void OnDestroy()
+        {
+            SetRadarOwnsMouse(false);
         }
     }
 }

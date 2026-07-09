@@ -15,6 +15,7 @@ namespace BeyondSpiderAssembly
         private const float ReloadIconSize = 50f;
         private const float ReloadIconWorldOffset = 0f;
         private const float ProjectileVisualScale = 3f;
+        private const float BaseMuzzleForwardOffset = 2f;
 
         private float reloadTime;
         private float reload;
@@ -93,7 +94,7 @@ namespace BeyondSpiderAssembly
                 return false;
             }
 
-            Vector3 aim = solution.AimPoint - transform.position;
+            Vector3 aim = solution.AimPoint - ApproximateMuzzlePosition();
             if (aim.sqrMagnitude < 0.001f)
             {
                 return false;
@@ -125,8 +126,9 @@ namespace BeyondSpiderAssembly
             float baseDamage = Caliber.Value * 1.1f;
             const float velocityDamageCoefficient = 0.0006f;
 
+            Vector3 muzzlePosition = ApproximateMuzzlePosition();
             GameObject round = new GameObject("BeyondSpider Railgun Slug");
-            round.transform.position = transform.position + transform.forward * 1.2f;
+            round.transform.position = muzzlePosition;
             round.transform.rotation = Quaternion.LookRotation(direction.normalized, transform.up);
             Rigidbody rb = round.AddComponent<Rigidbody>();
             rb.interpolation = RigidbodyInterpolation.Extrapolate;
@@ -158,7 +160,7 @@ namespace BeyondSpiderAssembly
             projectile.UseRaycastDetection = true;
             SpaceEffectAssets.AttachRailgunTailGlow(round.transform, rb, Caliber.Value, MuzzleVelocity.Value);
 
-            SpaceEffectAssets.PlayMuzzleSound(transform, Caliber.Value);
+            SpaceEffectAssets.PlayMuzzleSound(muzzlePosition, Caliber.Value);
 
             if (Body != null)
             {
@@ -169,7 +171,8 @@ namespace BeyondSpiderAssembly
 
         public Vector3 ApproximateMuzzlePosition()
         {
-            return transform.position + transform.forward * 1.2f;
+            float zScale = Mathf.Max(0.05f, Mathf.Abs(transform.localScale.z));
+            return transform.position + transform.forward * BaseMuzzleForwardOffset * zScale;
         }
 
         public float CurrentMuzzleVelocity()
@@ -191,7 +194,7 @@ namespace BeyondSpiderAssembly
             }
 
             Vector3 screen = camera.WorldToScreenPoint(transform.position + transform.up * ReloadIconWorldOffset);
-            if (screen.z <= 0f)
+            if (screen.z <= 0f || screen.z >= 20f)
             {
                 return;
             }
@@ -230,10 +233,12 @@ namespace BeyondSpiderAssembly
         private const float BindRefreshInterval = 0.5f;
         private const float ActiveIconSize = 44f;
         private const float ActiveIconWorldOffset = 0.45f;
+        private const int LinkLineCount = 12;
 
         private readonly List<SpaceGunnerHinge> orientationHinges = new List<SpaceGunnerHinge>();
         private readonly List<SpaceGunnerHinge> pitchHinges = new List<SpaceGunnerHinge>();
         private readonly List<RailgunBarrelBlock> boundGuns = new List<RailgunBarrelBlock>();
+        private readonly GameObject[] linkLines = new GameObject[LinkLineCount];
         private bool active;
         private bool fireEmulated;
         private float nextBindRefresh;
@@ -278,6 +283,7 @@ namespace BeyondSpiderAssembly
         {
             StopFireEmulation();
             ReleaseHinges();
+            HideLinkLines();
             SpaceGunnerNet.Instance.Unregister(this);
             ShipState ship = OwnShip();
             if (ship != null)
@@ -285,6 +291,17 @@ namespace BeyondSpiderAssembly
                 SpaceCombatRegistry.RemoveSubsystem(this, ship.Gunners);
             }
             registered = false;
+        }
+
+        private void Update()
+        {
+            if (!BlockBehaviour.isSimulating || !SpaceCombatRuntime.ShowArmorHP)
+            {
+                HideLinkLines();
+                return;
+            }
+
+            ShowGroupLine();
         }
 
         public override void SimulateUpdateHost()
@@ -386,7 +403,7 @@ namespace BeyondSpiderAssembly
             {
                 if (ship.Captain.TryGetLockedFireSolution(referenceGun.ApproximateMuzzlePosition(), referenceGun.CurrentMuzzleVelocity(), out solution))
                 {
-                    return SpaceBallistics.IsHostile(this, solution.Target);
+                    return ship.Captain.CanCommandLockedFireAt(solution.Target);
                 }
             }
 
@@ -401,6 +418,104 @@ namespace BeyondSpiderAssembly
             synthetic.Velocity = solution.Target.Velocity;
             solution.AimPoint = SpaceBallistics.AimPoint(referenceGun.ApproximateMuzzlePosition(), synthetic, referenceGun.CurrentMuzzleVelocity());
             return SpaceBallistics.IsHostile(this, solution.Target);
+        }
+
+        private void InitLinkLines()
+        {
+            for (int i = 0; i < LinkLineCount; i++)
+            {
+                if (linkLines[i] != null)
+                {
+                    continue;
+                }
+
+                Transform existing = transform.Find("line" + i.ToString());
+                if (existing != null)
+                {
+                    linkLines[i] = existing.gameObject;
+                    linkLines[i].SetActive(false);
+                    continue;
+                }
+
+                linkLines[i] = new GameObject("line" + i.ToString());
+                linkLines[i].transform.SetParent(gameObject.transform);
+                LineRenderer renderer = linkLines[i].AddComponent<LineRenderer>();
+                renderer.material = new Material(Shader.Find("Particles/Additive"));
+                renderer.SetColors(Color.red, Color.yellow);
+                renderer.SetWidth(0.1f, 0.05f);
+                linkLines[i].SetActive(false);
+            }
+        }
+
+        private void ShowGroupLine()
+        {
+            InitLinkLines();
+            HideLinkLines();
+            RefreshBindings(false);
+
+            int lineIndex = 0;
+            for (int i = 0; i < boundGuns.Count && lineIndex < LinkLineCount; i++)
+            {
+                RailgunBarrelBlock gun = boundGuns[i];
+                if (gun == null)
+                {
+                    continue;
+                }
+
+                SetLinkLine(lineIndex, gun.transform.position);
+                lineIndex++;
+            }
+            for (int i = 0; i < orientationHinges.Count && lineIndex < LinkLineCount; i++)
+            {
+                SpaceGunnerHinge hinge = orientationHinges[i];
+                if (hinge == null || !hinge.IsValid)
+                {
+                    continue;
+                }
+
+                SetLinkLine(lineIndex, hinge.transform.position);
+                lineIndex++;
+            }
+            for (int i = 0; i < pitchHinges.Count && lineIndex < LinkLineCount; i++)
+            {
+                SpaceGunnerHinge hinge = pitchHinges[i];
+                if (hinge == null || !hinge.IsValid)
+                {
+                    continue;
+                }
+
+                SetLinkLine(lineIndex, hinge.transform.position);
+                lineIndex++;
+            }
+        }
+
+        private void SetLinkLine(int index, Vector3 target)
+        {
+            if (index < 0 || index >= linkLines.Length || linkLines[index] == null)
+            {
+                return;
+            }
+
+            LineRenderer renderer = linkLines[index].GetComponent<LineRenderer>();
+            if (renderer == null)
+            {
+                return;
+            }
+
+            renderer.SetPosition(0, transform.position);
+            renderer.SetPosition(1, target);
+            linkLines[index].SetActive(true);
+        }
+
+        private void HideLinkLines()
+        {
+            for (int i = 0; i < linkLines.Length; i++)
+            {
+                if (linkLines[i] != null)
+                {
+                    linkLines[i].SetActive(false);
+                }
+            }
         }
 
         private void RefreshBindings(bool force)
