@@ -20,5 +20,13 @@ namespace BeyondSpiderAssembly
         {
             return SpaceCombatRegistry.FindShip(PlayerID);
         }
+
+        // MInfo isn't part of Besiege's own AddKey/AddSlider/AddToggle/AddText/AddMenu/AddLimits
+        // family -- see MInfo.cs -- but it's declared here so every SpaceBlock can call AddInfo(...)
+        // the same bare, unqualified way it already calls those.
+        public MInfo AddInfo(string displayName, string key, string initialValue = "")
+        {
+            return (MInfo)AddCustom(new MInfo(displayName, key, initialValue));
+        }
     }
 }

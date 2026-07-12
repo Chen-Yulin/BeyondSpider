@@ -48,6 +48,66 @@ namespace BeyondSpiderAssembly
         {
             return block != null && target != null && target.PlayerID != block.PlayerID && target.Team != block.Team;
         }
+
+        private const float ProjectileVisualScale = 3f;
+
+        // Single spawn path for every physical cannon shell (railgun slugs and single-block
+        // flak-turret large rounds alike) — same mesh, same raycast hit detection, same
+        // railgun-style tail glow, and no drag (rb.drag is always 0; real projectiles don't
+        // decelerate in the vacuum this mod's ships fight in). Callers still supply their own
+        // damage/mass/lifetime numbers since those are weapon-specific balance, not shared
+        // mechanics.
+        public static void SpawnKineticRound(
+            Vector3 position,
+            Vector3 forward,
+            Vector3 velocity,
+            float caliber,
+            float damage,
+            float velocityDamageCoefficient,
+            float mass,
+            float lifetime,
+            int ownerPlayerId,
+            MPTeam ownerTeam,
+            float muzzleVelocity)
+        {
+            GameObject round = new GameObject("BeyondSpider Cannon Round");
+            round.transform.position = position;
+            round.transform.rotation = Quaternion.LookRotation(forward, Vector3.up);
+
+            Rigidbody rb = round.AddComponent<Rigidbody>();
+            rb.interpolation = RigidbodyInterpolation.Extrapolate;
+            rb.mass = mass;
+            rb.drag = 0f;
+            rb.useGravity = false;
+            rb.velocity = velocity;
+
+            GameObject vis = new GameObject("CannonVis");
+            vis.transform.SetParent(round.transform);
+            vis.transform.localPosition = Vector3.zero;
+            vis.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+            vis.transform.localScale = Vector3.one * caliber / 500f * ProjectileVisualScale;
+            MeshFilter meshFilter = vis.AddComponent<MeshFilter>();
+            meshFilter.sharedMesh = ModResource.GetMesh("Cannon Mesh").Mesh;
+            MeshRenderer meshRenderer = vis.AddComponent<MeshRenderer>();
+            meshRenderer.material.mainTexture = ModResource.GetTexture("Cannon Texture").Texture;
+
+            SpaceKineticRound projectile = round.AddComponent<SpaceKineticRound>();
+            projectile.OwnerPlayerID = ownerPlayerId;
+            projectile.OwnerTeam = ownerTeam;
+            projectile.Damage = damage;
+            projectile.VelocityDamageCoefficient = velocityDamageCoefficient;
+            projectile.Lifetime = lifetime;
+            projectile.MassEstimate = rb.mass;
+            projectile.Caliber = caliber;
+            projectile.RadiusValue = Mathf.Clamp(caliber / 100f * ProjectileVisualScale, 1.2f, 7.5f);
+            projectile.SpawnImpactSpark = true;
+            projectile.UseRaycastDetection = true;
+
+            SpaceEffectAssets.AttachRailgunTailGlow(round.transform, rb, caliber, muzzleVelocity, ProjectileVisualScale);
+            SpaceEffectAssets.PlayMuzzleSound(position, caliber);
+
+            Object.Destroy(round, lifetime + 0.2f);
+        }
     }
 
     internal static class SpaceEffectAssets
@@ -123,7 +183,11 @@ namespace BeyondSpiderAssembly
             Object.Destroy(sound, 3f);
         }
 
-        public static void AttachRailgunTailGlow(Transform round, Rigidbody body, float caliber, float maxSpeed)
+        // visualScale must be the same ProjectileVisualScale multiplier SpawnKineticRound
+        // applies to the shell mesh — the glow's anchor and the CannonLight flare are
+        // positioned/sized off the same caliber terms as the mesh, so if this ever drifts
+        // out of sync with the mesh's own scale the flare stops lining up with the shell.
+        public static void AttachRailgunTailGlow(Transform round, Rigidbody body, float caliber, float maxSpeed, float visualScale)
         {
             if (round == null || body == null)
             {
@@ -132,7 +196,7 @@ namespace BeyondSpiderAssembly
 
             GameObject glow = new GameObject("Railgun Velocity Tail Glow");
             glow.transform.SetParent(round);
-            glow.transform.localPosition = new Vector3(0f, 0f, -Mathf.Max(0.15f, caliber / 220f));
+            glow.transform.localPosition = new Vector3(0f, 0f, -Mathf.Max(0.15f, caliber / 220f * visualScale));
             glow.transform.localRotation = Quaternion.identity;
             glow.transform.localScale = Vector3.one;
 
@@ -143,7 +207,7 @@ namespace BeyondSpiderAssembly
                 cannonLight.transform.SetParent(glow.transform);
                 cannonLight.transform.localPosition = Vector3.zero;
                 cannonLight.transform.localRotation = Quaternion.identity;
-                cannonLight.transform.localScale = Vector3.one * Mathf.Clamp(caliber / 120f, 0.6f, 3.5f);
+                cannonLight.transform.localScale = Vector3.one * Mathf.Clamp(caliber / 120f * visualScale, 0.6f, 3.5f);
             }
 
             RailgunTailGlow tailGlow = glow.AddComponent<RailgunTailGlow>();
@@ -355,6 +419,7 @@ namespace BeyondSpiderAssembly
             {
                 return;
             }
+            body.transform.position += body.velocity * Time.fixedDeltaTime;
             body.velocity = newVelocity;
             if (newVelocity.magnitude < RoundStallSpeed)
             {

@@ -1,5 +1,5 @@
 <Block>
-	<Debug>false</Debug>
+	<Debug>true</Debug>
 	<ID>6</ID>
 	<Name>CIWS Block</Name>
 	<Mass>0.3</Mass>

@@ -1,5 +1,5 @@
 <Block>
-	<Debug>false</Debug>
+	<Debug>true</Debug>
 	<ID>7</ID>
 	<Name>Heavy Nuclear Missile</Name>
 	<Mass>8.0</Mass>
@@ -17,9 +17,9 @@
 	</Icon>
 	<Colliders>
 		<BoxCollider>
-			<Position x="0.0" y="0.0" z="0.4" />
+			<Position x="0.0" y="0.0" z="1.4" />
 			<Rotation x="0" y="0" z="0" />
-			<Scale x="0.45" y="0.45" z="1.8" />
+			<Scale x="0.4" y="0.4" z="2.5" />
 		</BoxCollider>
 	</Colliders>
 	<BasePoint hasAddingPoint="false">

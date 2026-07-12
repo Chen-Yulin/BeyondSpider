@@ -35,6 +35,10 @@ namespace BeyondSpiderAssembly
         private const float OriginMarkerScale = 2f;
         private const float RadarBloomAlpha = 0.16f;
         private const float RadarBloomOffset = 1.5f;
+        private const float GlowRadius = DisplayRadius * 1.35f;
+        private const float SweepArcDegrees = 55f;
+        private const float SweepSpeedDegPerSec = 90f;
+        private const int VignetteTextureSize = 64;
 
         public bool IsOpen;
         public float MetersPerUnit = 50f;
@@ -63,6 +67,11 @@ namespace BeyondSpiderAssembly
         private Material markerMaterial;
         private GameObject lockIcon;
         private Mesh arrowMesh;
+        private Transform sweepTransform;
+        private float sweepAngle;
+        private Texture2D vignetteTexture;
+        private Texture2D scanlineTexture;
+        private Texture2D framePixel;
 
         private readonly List<GameObject> arrowPool = new List<GameObject>();
         private readonly List<GameObject> spherePool = new List<GameObject>();
@@ -75,6 +84,7 @@ namespace BeyondSpiderAssembly
         {
             arrowMesh = BuildArrowMesh();
             BuildScene();
+            BuildOverlayTextures();
         }
 
         private void BuildScene()
@@ -95,7 +105,9 @@ namespace BeyondSpiderAssembly
             radarCamera = cameraObject.AddComponent<Camera>();
             radarCamera.fieldOfView = 45f;
             radarCamera.clearFlags = CameraClearFlags.SolidColor;
-            radarCamera.backgroundColor = new Color(0.02f, 0.05f, 0.03f);
+            // Deep teal-navy "hologram void" instead of a flat near-black — still dark enough for
+            // the grid/markers to read clearly, but reads as a projected display, not a dead screen.
+            radarCamera.backgroundColor = new Color(0.012f, 0.045f, 0.075f);
             radarCamera.nearClipPlane = 0.1f;
             radarCamera.farClipPlane = 100f;
             radarTexture = new RenderTexture(RadarTextureSize, RadarTextureSize, 16);
@@ -104,7 +116,9 @@ namespace BeyondSpiderAssembly
             radarCamera.targetTexture = radarTexture;
             radarCamera.enabled = false;
 
+            BuildGlow();
             BuildGrid();
+            BuildSweep();
             BuildLockIcon();
         }
 
@@ -154,7 +168,154 @@ namespace BeyondSpiderAssembly
             filter.sharedMesh = mesh;
             MeshRenderer renderer = gridObject.AddComponent<MeshRenderer>();
             renderer.material = new Material(Shader.Find("Particles/Additive"));
-            renderer.material.SetColor("_TintColor", new Color(0.2f, 0.9f, 0.3f, 0.5f));
+            renderer.material.SetColor("_TintColor", new Color(0.3f, 0.85f, 0.95f, 0.55f));
+        }
+
+        // Both the glow disc and the sweep beam below add every triangle in both winding orders,
+        // so they render correctly regardless of which side "Particles/Additive" treats as front —
+        // cheap insurance for a purely decorative mesh we can't preview outside the game.
+        private static void AddFanTriangle(List<int> triangles, int center, int a, int b)
+        {
+            triangles.Add(center);
+            triangles.Add(a);
+            triangles.Add(b);
+            triangles.Add(center);
+            triangles.Add(b);
+            triangles.Add(a);
+        }
+
+        // A soft, additively-blended radial glow sitting just under the grid plane so the display
+        // reads as a glowing dome rather than markers floating over a flat void.
+        private void BuildGlow()
+        {
+            GameObject glowObject = new GameObject("BS Radar Glow");
+            glowObject.transform.SetParent(pocketRoot, false);
+            glowObject.transform.localPosition = new Vector3(0f, -0.03f, 0f);
+            glowObject.transform.localRotation = Quaternion.identity;
+
+            Color core = new Color(0.12f, 0.5f, 0.7f, 0.4f);
+            Color rim = new Color(0.12f, 0.5f, 0.7f, 0f);
+
+            List<Vector3> vertices = new List<Vector3>();
+            List<Color> colors = new List<Color>();
+            List<int> triangles = new List<int>();
+
+            vertices.Add(Vector3.zero);
+            colors.Add(core);
+            for (int seg = 0; seg <= SegmentCount; seg++)
+            {
+                float angle = seg * Mathf.PI * 2f / SegmentCount;
+                vertices.Add(new Vector3(GlowRadius * Mathf.Cos(angle), 0f, GlowRadius * Mathf.Sin(angle)));
+                colors.Add(rim);
+            }
+            for (int seg = 0; seg < SegmentCount; seg++)
+            {
+                AddFanTriangle(triangles, 0, 1 + seg, 1 + seg + 1);
+            }
+
+            Mesh mesh = new Mesh();
+            mesh.vertices = vertices.ToArray();
+            mesh.colors = colors.ToArray();
+            mesh.triangles = triangles.ToArray();
+            mesh.RecalculateBounds();
+
+            MeshFilter filter = glowObject.AddComponent<MeshFilter>();
+            filter.sharedMesh = mesh;
+            MeshRenderer renderer = glowObject.AddComponent<MeshRenderer>();
+            renderer.material = new Material(Shader.Find("Particles/Additive"));
+        }
+
+        // A slowly rotating sweep wedge — the classic radar/hologram "scanning" cue — built as a
+        // fan whose vertex alpha fades from bright at the leading edge to transparent at the
+        // trailing edge. sweepTransform's yaw is advanced continuously in UpdateSweep().
+        private void BuildSweep()
+        {
+            GameObject sweepObject = new GameObject("BS Radar Sweep");
+            sweepObject.transform.SetParent(pocketRoot, false);
+            sweepObject.transform.localPosition = new Vector3(0f, 0.01f, 0f);
+            sweepObject.transform.localRotation = Quaternion.identity;
+            sweepTransform = sweepObject.transform;
+
+            Color leading = new Color(0.55f, 0.95f, 0.95f, 0.5f);
+            Color trailing = new Color(0.55f, 0.95f, 0.95f, 0f);
+            const int sweepSegments = 20;
+
+            List<Vector3> vertices = new List<Vector3>();
+            List<Color> colors = new List<Color>();
+            List<int> triangles = new List<int>();
+
+            vertices.Add(Vector3.zero);
+            colors.Add(leading);
+            for (int seg = 0; seg <= sweepSegments; seg++)
+            {
+                float t = (float)seg / sweepSegments;
+                float angle = -t * SweepArcDegrees * Mathf.Deg2Rad;
+                vertices.Add(new Vector3(DisplayRadius * Mathf.Cos(angle), 0f, DisplayRadius * Mathf.Sin(angle)));
+                colors.Add(Color.Lerp(leading, trailing, t));
+            }
+            for (int seg = 0; seg < sweepSegments; seg++)
+            {
+                AddFanTriangle(triangles, 0, 1 + seg, 1 + seg + 1);
+            }
+
+            Mesh mesh = new Mesh();
+            mesh.vertices = vertices.ToArray();
+            mesh.colors = colors.ToArray();
+            mesh.triangles = triangles.ToArray();
+            mesh.RecalculateBounds();
+
+            MeshFilter filter = sweepObject.AddComponent<MeshFilter>();
+            filter.sharedMesh = mesh;
+            MeshRenderer renderer = sweepObject.AddComponent<MeshRenderer>();
+            renderer.material = new Material(Shader.Find("Particles/Additive"));
+        }
+
+        private void UpdateSweep()
+        {
+            if (sweepTransform == null)
+            {
+                return;
+            }
+            sweepAngle += Time.deltaTime * SweepSpeedDegPerSec;
+            if (sweepAngle > 360f)
+            {
+                sweepAngle -= 360f;
+            }
+            sweepTransform.localRotation = Quaternion.Euler(0f, sweepAngle, 0f);
+        }
+
+        // Procedural textures for the OnGUI overlay pass (DrawRadarTexture/DrawPanelFrame) — a
+        // radial vignette, a repeating scanline, and a 1x1 solid pixel for stretching into frame
+        // bars. Generated once; none of this depends on any shader beyond Unity's built-in GUI blit.
+        private void BuildOverlayTextures()
+        {
+            vignetteTexture = new Texture2D(VignetteTextureSize, VignetteTextureSize, TextureFormat.ARGB32, false);
+            vignetteTexture.wrapMode = TextureWrapMode.Clamp;
+            Vector2 center = new Vector2((VignetteTextureSize - 1) * 0.5f, (VignetteTextureSize - 1) * 0.5f);
+            float maxDist = center.magnitude;
+            for (int y = 0; y < VignetteTextureSize; y++)
+            {
+                for (int x = 0; x < VignetteTextureSize; x++)
+                {
+                    float dist = Vector2.Distance(new Vector2(x, y), center) / maxDist;
+                    float alpha = Mathf.Clamp01(Mathf.Pow(dist, 2.2f)) * 0.65f;
+                    vignetteTexture.SetPixel(x, y, new Color(0f, 0.02f, 0.05f, alpha));
+                }
+            }
+            vignetteTexture.Apply();
+
+            scanlineTexture = new Texture2D(1, 4, TextureFormat.ARGB32, false);
+            scanlineTexture.wrapMode = TextureWrapMode.Repeat;
+            scanlineTexture.filterMode = FilterMode.Point;
+            scanlineTexture.SetPixel(0, 0, new Color(0.6f, 0.95f, 1f, 0.10f));
+            scanlineTexture.SetPixel(0, 1, new Color(0f, 0f, 0f, 0f));
+            scanlineTexture.SetPixel(0, 2, new Color(0f, 0f, 0f, 0f));
+            scanlineTexture.SetPixel(0, 3, new Color(0f, 0f, 0f, 0f));
+            scanlineTexture.Apply();
+
+            framePixel = new Texture2D(1, 1, TextureFormat.ARGB32, false);
+            framePixel.SetPixel(0, 0, Color.white);
+            framePixel.Apply();
         }
 
         private void BuildLockIcon()
@@ -421,6 +582,10 @@ namespace BeyondSpiderAssembly
             {
                 lockIcon.SetActive(true);
                 lockIcon.transform.localPosition = lockedMarker.transform.localPosition;
+                // Billboard toward the orbiting radar camera every frame — the quad's own rotation
+                // never changes otherwise, so it would render edge-on/backwards once the player
+                // orbits away from whatever angle it happened to be built facing.
+                lockIcon.transform.rotation = radarCamera.transform.rotation;
             }
             else
             {
@@ -465,6 +630,7 @@ namespace BeyondSpiderAssembly
             SetRadarOwnsMouse(MouseIsOwnedByRadar(rect));
             HandleOrbitAndZoom(rect);
             UpdateGridScale();
+            UpdateSweep();
             HandleClick(rect);
             SyncMarkers();
         }
@@ -643,18 +809,8 @@ namespace BeyondSpiderAssembly
             Vector3 rtPoint = new Vector3(fracX * radarCamera.pixelWidth, (1f - fracY) * radarCamera.pixelHeight, 0f);
             Ray ray = radarCamera.ScreenPointToRay(rtPoint);
 
-            RaycastHit hit;
-            if (!Physics.Raycast(ray, out hit, 100f))
-            {
-                return;
-            }
-
-            ITrackable target = TrackableFor(hit.collider.gameObject);
+            ITrackable target = FindLockableTarget(ray, ship);
             if (target == null)
-            {
-                return;
-            }
-            if (ReferenceEquals(target, ship.Core))
             {
                 return;
             }
@@ -662,9 +818,46 @@ namespace BeyondSpiderAssembly
             bool willLock = !ReferenceEquals(ship.LockedTarget, target);
             ship.LockedTarget = willLock ? target : null;
 
-            ILockable lockable = target as ILockable;
-            int targetGuidHash = lockable != null ? lockable.GuidHash : 0;
-            ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(ship.Captain.PlayerID, target.PlayerID, targetGuidHash, willLock));
+            ILockable lockable = (ILockable)target;
+            ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(ship.Captain.PlayerID, target.PlayerID, lockable.GuidHash, willLock));
+        }
+
+        // A click point can land on more than one overlapping marker collider — e.g. a missile
+        // about to hit its target sits almost exactly on top of the ship it's homing on. A plain
+        // Physics.Raycast only reports the single closest hit, so if that happens to be a target
+        // that can't be locked (our own ship's self marker; anything not ILockable), the click
+        // would silently do nothing even though a lockable target was right behind it. Walk every
+        // hit closest-first and take the nearest one that's actually lockable instead.
+        private ITrackable FindLockableTarget(Ray ray, ShipState ship)
+        {
+            RaycastHit[] hits = Physics.RaycastAll(ray, 100f);
+            ITrackable best = null;
+            float bestDistance = float.MaxValue;
+            for (int i = 0; i < hits.Length; i++)
+            {
+                if (hits[i].distance >= bestDistance)
+                {
+                    continue;
+                }
+
+                ITrackable candidate = TrackableFor(hits[i].collider.gameObject);
+                if (candidate == null || !candidate.IsAlive)
+                {
+                    continue;
+                }
+                if (ReferenceEquals(candidate, ship.Core))
+                {
+                    continue;
+                }
+                if (!(candidate is ILockable))
+                {
+                    continue;
+                }
+
+                best = candidate;
+                bestDistance = hits[i].distance;
+            }
+            return best;
         }
 
         private void OnGUI()
@@ -677,6 +870,7 @@ namespace BeyondSpiderAssembly
             Rect rect = GetPanelRect();
             ConsumePanelMouseEvent(rect);
             DrawRadarTexture(rect);
+            DrawPanelFrame(rect);
             float ringMeters = ComputeRingStepMeters();
             GUI.Label(new Rect(rect.x, rect.y - 20f, rect.width, 20f), "1 ring = " + ringMeters.ToString("0") + "m");
         }
@@ -684,23 +878,59 @@ namespace BeyondSpiderAssembly
         private void DrawRadarTexture(Rect rect)
         {
             Color previousColor = GUI.color;
-            GUI.color = new Color(1f, 1f, 1f, RadarBloomAlpha);
+            GUI.color = new Color(0.55f, 0.9f, 1f, RadarBloomAlpha);
             DrawRadarBloomPass(rect, -RadarBloomOffset, 0f);
             DrawRadarBloomPass(rect, RadarBloomOffset, 0f);
             DrawRadarBloomPass(rect, 0f, -RadarBloomOffset);
             DrawRadarBloomPass(rect, 0f, RadarBloomOffset);
-            GUI.color = new Color(1f, 1f, 1f, RadarBloomAlpha * 0.6f);
+            GUI.color = new Color(0.55f, 0.9f, 1f, RadarBloomAlpha * 0.6f);
             DrawRadarBloomPass(rect, -RadarBloomOffset, -RadarBloomOffset);
             DrawRadarBloomPass(rect, RadarBloomOffset, -RadarBloomOffset);
             DrawRadarBloomPass(rect, -RadarBloomOffset, RadarBloomOffset);
             DrawRadarBloomPass(rect, RadarBloomOffset, RadarBloomOffset);
             GUI.color = previousColor;
             GUI.DrawTexture(rect, radarTexture);
+
+            // CRT-style scanlines (tiled) and a radial vignette on top of the raw render — sells
+            // the "projected display" read instead of a flat photo of the pocket scene.
+            GUI.color = Color.white;
+            GUI.DrawTextureWithTexCoords(rect, scanlineTexture, new Rect(0f, 0f, 1f, rect.height / 4f));
+            GUI.DrawTexture(rect, vignetteTexture);
+            GUI.color = previousColor;
         }
 
         private void DrawRadarBloomPass(Rect rect, float xOffset, float yOffset)
         {
             GUI.DrawTexture(new Rect(rect.x + xOffset, rect.y + yOffset, rect.width, rect.height), radarTexture);
+        }
+
+        // Thin glowing border with brighter corner accents around the panel rect, reading as a
+        // projector frame rather than a bare texture floating over the game view.
+        private void DrawPanelFrame(Rect rect)
+        {
+            const float border = 2f;
+            const float cornerSize = 10f;
+            Color edgeColor = new Color(0.35f, 0.85f, 1f, 0.7f);
+            Color cornerColor = new Color(0.75f, 1f, 1f, 0.95f);
+            Color previousColor = GUI.color;
+
+            GUI.color = edgeColor;
+            GUI.DrawTexture(new Rect(rect.x - border, rect.y - border, rect.width + border * 2f, border), framePixel);
+            GUI.DrawTexture(new Rect(rect.x - border, rect.yMax, rect.width + border * 2f, border), framePixel);
+            GUI.DrawTexture(new Rect(rect.x - border, rect.y - border, border, rect.height + border * 2f), framePixel);
+            GUI.DrawTexture(new Rect(rect.xMax, rect.y - border, border, rect.height + border * 2f), framePixel);
+
+            GUI.color = cornerColor;
+            GUI.DrawTexture(new Rect(rect.x - border, rect.y - border, cornerSize, border), framePixel);
+            GUI.DrawTexture(new Rect(rect.x - border, rect.y - border, border, cornerSize), framePixel);
+            GUI.DrawTexture(new Rect(rect.xMax - cornerSize + border, rect.y - border, cornerSize, border), framePixel);
+            GUI.DrawTexture(new Rect(rect.xMax, rect.y - border, border, cornerSize), framePixel);
+            GUI.DrawTexture(new Rect(rect.x - border, rect.yMax, cornerSize, border), framePixel);
+            GUI.DrawTexture(new Rect(rect.x - border, rect.yMax - cornerSize + border, border, cornerSize), framePixel);
+            GUI.DrawTexture(new Rect(rect.xMax - cornerSize + border, rect.yMax, cornerSize, border), framePixel);
+            GUI.DrawTexture(new Rect(rect.xMax, rect.yMax - cornerSize + border, border, cornerSize), framePixel);
+
+            GUI.color = previousColor;
         }
 
         private void ConsumePanelMouseEvent(Rect rect)

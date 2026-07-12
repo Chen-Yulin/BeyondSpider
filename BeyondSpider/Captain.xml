@@ -1,5 +1,5 @@
 <Block>
-	<Debug>false</Debug>
+	<Debug>true</Debug>
 	<ID>8</ID>
 	<Name>Captain</Name>
 	<Mass>0.3</Mass>

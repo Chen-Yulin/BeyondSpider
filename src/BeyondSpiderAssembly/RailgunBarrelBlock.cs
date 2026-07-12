@@ -9,17 +9,28 @@ namespace BeyondSpiderAssembly
         public MKey FireKey;
         public MToggle FireControl;
         public MText GunGroup;
-        public MSlider Caliber;
-        public MSlider MuzzleVelocity;
+        public MInfo CaliberInfo;
+        public MInfo BoreLengthRatioInfo;
+        public MInfo MuzzleVelocityInfo;
 
         private const float ReloadIconSize = 50f;
         private const float ReloadIconWorldOffset = 0f;
-        private const float ProjectileVisualScale = 3f;
         private const float BaseMuzzleForwardOffset = 2f;
+        private const float MinScaleComponent = 0.05f;
+
+        // Caliber/bore length/muzzle velocity used to be player-set sliders; they're now derived
+        // from the block's own build-mode scale instead, so the player sizes the barrel visually
+        // and these follow automatically. See agent-besiege-mod-guide.md for the derivation.
+        private const float CaliberFromScaleCoefficient = 400f;
+        private const float BoreLengthFromScaleCoefficient = 16000f;
+        private const float MuzzleVelocityPerBoreLength = 65f;
 
         private float reloadTime;
         private float reload;
         private bool manualFireQueued;
+        private float caliberMm;
+        private float boreLengthRatio;
+        private float muzzleVelocity;
         // See agent-besiege-mod-guide.md's "注册时序规范" — retried each tick until it
         // succeeds, since ShipState may not exist yet when this OnSimulateStart runs.
         private bool registered;
@@ -31,14 +42,50 @@ namespace BeyondSpiderAssembly
             FireKey = AddKey("Fire", "BSRailgunFire", KeyCode.C);
             FireControl = AddToggle("Fire Control", "BSRailgunFireControl", false);
             GunGroup = AddText("Gun Group", "BSRailgunGroup", "g0");
-            Caliber = AddSlider("Caliber", "BSRailgunCaliber", 90f, 20f, 300f);
-            MuzzleVelocity = AddSlider("Muzzle Velocity", "BSRailgunVelocity", 2600f, 1200f, 6000f);
+            CaliberInfo = AddInfo("Caliber", "BSRailgunCaliberInfo");
+            BoreLengthRatioInfo = AddInfo("Bore Length", "BSRailgunBoreLengthInfo");
+            MuzzleVelocityInfo = AddInfo("Muzzle Velocity", "BSRailgunVelocityInfo");
+            RecomputeBallistics();
+        }
+
+        // Caliber depends only on the barrel's cross-section (local x/y scale); bore length ratio
+        // ("倍径", barrel length in calibers, standard naval-gun notation like "16 in/L45") folds
+        // in the along-barrel scale (local z, same axis ApproximateMuzzlePosition scales against);
+        // muzzle velocity follows from bore length ratio alone. Recomputed continuously (not just
+        // once) because BuildingUpdate needs it live while the player drags the scale handles.
+        private void RecomputeBallistics()
+        {
+            Vector3 scale = transform.localScale;
+            float x = Mathf.Max(MinScaleComponent, Mathf.Abs(scale.x));
+            float y = Mathf.Max(MinScaleComponent, Mathf.Abs(scale.y));
+            float z = Mathf.Max(MinScaleComponent, Mathf.Abs(scale.z));
+
+            caliberMm = CaliberFromScaleCoefficient * Mathf.Sqrt(x * y);
+            boreLengthRatio = BoreLengthFromScaleCoefficient * z / caliberMm;
+            muzzleVelocity = MuzzleVelocityPerBoreLength * boreLengthRatio;
+
+            CaliberInfo.Set(caliberMm.ToString("F0") + " mm");
+            BoreLengthRatioInfo.Set("L/" + boreLengthRatio.ToString("F1"));
+            MuzzleVelocityInfo.Set(muzzleVelocity.ToString("F0") + " m/s");
+        }
+
+        public override void BuildingUpdate()
+        {
+            base.BuildingUpdate();
+            RecomputeBallistics();
+        }
+
+        public override void SimulateFixedUpdateAlways()
+        {
+            base.SimulateFixedUpdateAlways();
+            RecomputeBallistics();
         }
 
         public override void OnSimulateStart()
         {
             base.OnSimulateStart();
-            reloadTime = Mathf.Clamp(0.35f + Caliber.Value / 180f, 0.18f, 6f);
+            RecomputeBallistics();
+            reloadTime = Mathf.Clamp(0.35f + caliberMm / 180f, 0.18f, 6f);
             reload = reloadTime;
             manualFireQueued = false;
             ShipState ship = OwnShip();
@@ -109,8 +156,8 @@ namespace BeyondSpiderAssembly
                 return false;
             }
 
-            float massFactor = Caliber.Value / 300f;
-            float energyPerShot = 40f + massFactor * MuzzleVelocity.Value * MuzzleVelocity.Value * 0.00035f;
+            float massFactor = caliberMm / 300f;
+            float energyPerShot = 40f + massFactor * muzzleVelocity * muzzleVelocity * 0.00035f;
 
             ShipState ship = OwnShip();
             if (ship != null)
@@ -123,48 +170,20 @@ namespace BeyondSpiderAssembly
             }
 
             reload = 0f;
-            float baseDamage = Caliber.Value * 1.1f;
+            float baseDamage = caliberMm * 1.1f;
             const float velocityDamageCoefficient = 0.0006f;
 
             Vector3 muzzlePosition = ApproximateMuzzlePosition();
-            GameObject round = new GameObject("BeyondSpider Railgun Slug");
-            round.transform.position = muzzlePosition;
-            round.transform.rotation = Quaternion.LookRotation(direction.normalized, transform.up);
-            Rigidbody rb = round.AddComponent<Rigidbody>();
-            rb.interpolation = RigidbodyInterpolation.Extrapolate;
-            rb.mass = Mathf.Max(0.05f, massFactor);
-            rb.drag = 0.005f;
-            rb.useGravity = false;
-            rb.velocity = direction.normalized * MuzzleVelocity.Value + (Body == null ? Vector3.zero : Body.velocity);
-
-            GameObject vis = new GameObject("CannonVis");
-            vis.transform.SetParent(round.transform);
-            vis.transform.localPosition = Vector3.zero;
-            vis.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
-            vis.transform.localScale = Vector3.one * Caliber.Value / 500f * ProjectileVisualScale;
-            MeshFilter meshFilter = vis.AddComponent<MeshFilter>();
-            meshFilter.sharedMesh = ModResource.GetMesh("Cannon Mesh").Mesh;
-            MeshRenderer meshRenderer = vis.AddComponent<MeshRenderer>();
-            meshRenderer.material.mainTexture = ModResource.GetTexture("Cannon Texture").Texture;
-
-            SpaceKineticRound projectile = round.AddComponent<SpaceKineticRound>();
-            projectile.OwnerPlayerID = PlayerID;
-            projectile.OwnerTeam = Team;
-            projectile.Damage = baseDamage;
-            projectile.VelocityDamageCoefficient = velocityDamageCoefficient;
-            projectile.Lifetime = Mathf.Clamp(life + 2f, 2f, 12f);
-            projectile.MassEstimate = rb.mass;
-            projectile.Caliber = Caliber.Value;
-            projectile.RadiusValue = Mathf.Clamp(Caliber.Value / 100f * ProjectileVisualScale, 1.2f, 7.5f);
-            projectile.SpawnImpactSpark = true;
-            projectile.UseRaycastDetection = true;
-            SpaceEffectAssets.AttachRailgunTailGlow(round.transform, rb, Caliber.Value, MuzzleVelocity.Value);
-
-            SpaceEffectAssets.PlayMuzzleSound(muzzlePosition, Caliber.Value);
+            Vector3 velocity = direction.normalized * muzzleVelocity + (Body == null ? Vector3.zero : Body.velocity);
+            float mass = Mathf.Max(0.05f, massFactor);
+            float lifetime = Mathf.Clamp(life + 2f, 2f, 12f);
+            SpaceBallistics.SpawnKineticRound(
+                muzzlePosition, direction.normalized, velocity, caliberMm, baseDamage,
+                velocityDamageCoefficient, mass, lifetime, PlayerID, Team, muzzleVelocity);
 
             if (Body != null)
             {
-                Body.AddForce(-direction.normalized * (Caliber.Value / 100f) * (MuzzleVelocity.Value / 500f) * 6f, ForceMode.Impulse);
+                Body.AddForce(-direction.normalized * (caliberMm / 100f) * (muzzleVelocity / 500f) * 6f, ForceMode.Impulse);
             }
             return true;
         }
@@ -177,7 +196,7 @@ namespace BeyondSpiderAssembly
 
         public float CurrentMuzzleVelocity()
         {
-            return MuzzleVelocity.Value;
+            return muzzleVelocity;
         }
 
         private void OnGUI()
@@ -244,6 +263,27 @@ namespace BeyondSpiderAssembly
         private float nextBindRefresh;
         private RailgunBarrelBlock referenceGun;
 
+        // Empirical hinge direction calibration. Whether AngleToBe += x turns the gun in the
+        // +x direction around a hinge's axis depends on how the hinge was placed/flipped, and
+        // deriving it from Wheel.Flipped alone proved unreliable. So right after simulation
+        // start the gunner nudges its bound hinges a few degrees (orientation group first,
+        // then pitch group), watches which way the reference gun actually rotates around each
+        // hinge's axis, and records a per-hinge sign that DriveHinges uses from then on. A
+        // hinge that shows no measurable response (e.g. jammed against its limit) falls back
+        // to the Flipped heuristic.
+        private enum HingeCalibrationPhase { NotStarted, SettlingOrientation, SettlingPitch, Done }
+
+        private const int CalibrationSettleTicks = 30;
+        private const float CalibrationNudgeDegrees = 4f;
+        private const float CalibrationMinResponseDegrees = 0.25f;
+
+        private HingeCalibrationPhase calibrationPhase;
+        private int calibrationTicks;
+        private RailgunBarrelBlock calibrationGun;
+        private readonly Dictionary<SpaceGunnerHinge, float> hingeSigns = new Dictionary<SpaceGunnerHinge, float>();
+        private readonly Dictionary<SpaceGunnerHinge, Vector3> calibrationBaselines = new Dictionary<SpaceGunnerHinge, Vector3>();
+        private readonly Dictionary<SpaceGunnerHinge, float> calibrationApplied = new Dictionary<SpaceGunnerHinge, float>();
+
         public override bool EmulatesAnyKeys { get { return true; } }
 
         public override void SafeAwake()
@@ -269,6 +309,12 @@ namespace BeyondSpiderAssembly
             active = DefaultActive.IsActive;
             fireEmulated = false;
             nextBindRefresh = 0f;
+            calibrationPhase = HingeCalibrationPhase.NotStarted;
+            calibrationTicks = 0;
+            calibrationGun = null;
+            hingeSigns.Clear();
+            calibrationBaselines.Clear();
+            calibrationApplied.Clear();
             ShipState ship = OwnShip();
             if (ship != null)
             {
@@ -281,6 +327,8 @@ namespace BeyondSpiderAssembly
 
         public override void OnSimulateStop()
         {
+            CancelCalibrationInProgress();
+            hingeSigns.Clear();
             StopFireEmulation();
             ReleaseHinges();
             HideLinkLines();
@@ -332,6 +380,7 @@ namespace BeyondSpiderAssembly
 
             if (!active)
             {
+                CancelCalibrationInProgress();
                 StopFireEmulation();
                 ReleaseHinges();
                 return;
@@ -345,6 +394,13 @@ namespace BeyondSpiderAssembly
 
             RefreshBindings(false);
             if (referenceGun == null)
+            {
+                CancelCalibrationInProgress();
+                StopFireEmulation();
+                return;
+            }
+
+            if (!EnsureHingeCalibration())
             {
                 StopFireEmulation();
                 return;
@@ -387,6 +443,7 @@ namespace BeyondSpiderAssembly
             active = value;
             if (!active)
             {
+                CancelCalibrationInProgress();
                 StopFireEmulation();
                 ReleaseHinges();
             }
@@ -399,12 +456,9 @@ namespace BeyondSpiderAssembly
         private bool TryGetSolution(ShipState ship, out FireSolution solution)
         {
             solution = default(FireSolution);
-            if (ship.Priority == CommandPriority.AntiShip && ship.Captain != null)
+            if (ship.Captain != null && ship.Captain.TryGetLockedFireSolution(referenceGun.ApproximateMuzzlePosition(), referenceGun.CurrentMuzzleVelocity(), out solution))
             {
-                if (ship.Captain.TryGetLockedFireSolution(referenceGun.ApproximateMuzzlePosition(), referenceGun.CurrentMuzzleVelocity(), out solution))
-                {
-                    return ship.Captain.CanCommandLockedFireAt(solution.Target);
-                }
+                return ship.Captain.CanCommandLockedFireAt(solution.Target);
             }
 
             if (ship.DefensiveSolution.Target == null)
@@ -564,7 +618,7 @@ namespace BeyondSpiderAssembly
                 for (int i = 0; i < ship.Guns.Count; i++)
                 {
                     RailgunBarrelBlock gun = ship.Guns[i];
-                    if (gun != null && gun.GunGroup.Value == GunGroup.Value && gun.FireKey.Equals(FireKey))
+                    if (gun != null && gun.GunGroup.Value == GunGroup.Value && MKeyMatch.SharesBinding(gun.FireKey, FireKey))
                     {
                         boundGuns.Add(gun);
                     }
@@ -611,14 +665,218 @@ namespace BeyondSpiderAssembly
                     continue;
                 }
 
-                float signedAngle = hinge.SignedAngleTo(referenceGun.transform.forward, aimDirection);
-                float step = Mathf.Clamp(signedAngle, -maxStep, maxStep);
-                if (hinge.Wheel.Flipped)
+                float sign;
+                if (!hingeSigns.TryGetValue(hinge, out sign))
                 {
-                    step = -step;
+                    // Not calibrated yet (e.g. hinge bound mid-simulation); EnsureHingeCalibration
+                    // will pick it up on the next tick — don't steer it blindly in the meantime.
+                    continue;
                 }
-                hinge.AddAngle(step);
+
+                float signedAngle = hinge.SignedAngleTo(referenceGun.transform.forward, aimDirection);
+                float step = EaseStep(signedAngle, maxStep);
+                hinge.AddAngle(step * sign);
             }
+        }
+
+        // Constant-speed while the error is outside the ease zone, then ease the last
+        // EaseZoneDegrees down proportionally (20% of the remainder per tick) instead of
+        // commanding the full remaining angle in one step. Snapping AngleToBe straight to the
+        // target as soon as it's within one step's reach was giving the physical hinge a new
+        // close-range target every tick with no deceleration, which let its own motor overshoot
+        // and rebound — visible as back-and-forth twitching once the turret got near its aim
+        // point. This only runs during tracking (after calibration is Done), so it never
+        // interacts with the calibration nudge/measurement.
+        private const float EaseZoneDegrees = 2f;
+
+        private static float EaseStep(float delta, float maxStep)
+        {
+            if (Mathf.Abs(delta) < EaseZoneDegrees)
+            {
+                return delta * 0.2f;
+            }
+            return Mathf.Clamp(delta, -maxStep, maxStep);
+        }
+
+        // Returns true once every bound hinge has a measured direction sign. While measuring it
+        // holds fire and skips aiming: nudge the orientation hinges, wait for the physics to
+        // respond, read which way the reference gun turned, restore, then repeat for pitch.
+        private bool EnsureHingeCalibration()
+        {
+            if (calibrationPhase == HingeCalibrationPhase.Done)
+            {
+                if (AllBoundHingesCalibrated())
+                {
+                    return true;
+                }
+                calibrationPhase = HingeCalibrationPhase.NotStarted;
+            }
+
+            if (calibrationPhase == HingeCalibrationPhase.NotStarted)
+            {
+                calibrationGun = referenceGun;
+                calibrationTicks = 0;
+                if (StartCalibrationNudge(orientationHinges))
+                {
+                    calibrationPhase = HingeCalibrationPhase.SettlingOrientation;
+                }
+                else if (StartCalibrationNudge(pitchHinges))
+                {
+                    calibrationPhase = HingeCalibrationPhase.SettlingPitch;
+                }
+                else
+                {
+                    calibrationPhase = HingeCalibrationPhase.Done;
+                    return true;
+                }
+                return false;
+            }
+
+            if (calibrationGun != referenceGun)
+            {
+                // The gun we were watching disappeared or was swapped mid-measurement; the
+                // baselines are meaningless now, so revert the nudge and start over.
+                CancelCalibrationInProgress();
+                return false;
+            }
+
+            calibrationTicks++;
+            if (calibrationTicks < CalibrationSettleTicks)
+            {
+                return false;
+            }
+
+            FinishCalibrationNudge();
+            if (calibrationPhase == HingeCalibrationPhase.SettlingOrientation && StartCalibrationNudge(pitchHinges))
+            {
+                calibrationPhase = HingeCalibrationPhase.SettlingPitch;
+                calibrationTicks = 0;
+                return false;
+            }
+
+            calibrationPhase = HingeCalibrationPhase.Done;
+            return AllBoundHingesCalibrated();
+        }
+
+        private bool StartCalibrationNudge(List<SpaceGunnerHinge> hinges)
+        {
+            calibrationBaselines.Clear();
+            calibrationApplied.Clear();
+            if (referenceGun == null)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < hinges.Count; i++)
+            {
+                SpaceGunnerHinge hinge = hinges[i];
+                if (hinge == null || !hinge.IsValid || hinge.Wheel == null || calibrationApplied.ContainsKey(hinge))
+                {
+                    continue;
+                }
+
+                hinge.AddOwner(this);
+                float before = hinge.Wheel.AngleToBe;
+                hinge.AddAngle(CalibrationNudgeDegrees * ChooseNudgeSign(hinge));
+                float applied = hinge.Wheel.AngleToBe - before;
+                if (Mathf.Abs(applied) < 0.01f)
+                {
+                    // Limits left no room to move at all — nothing to measure.
+                    hingeSigns[hinge] = FallbackSign(hinge);
+                    continue;
+                }
+
+                calibrationApplied[hinge] = applied;
+                calibrationBaselines[hinge] = hinge.ToLocalDirection(referenceGun.transform.forward);
+            }
+            return calibrationApplied.Count > 0;
+        }
+
+        private void FinishCalibrationNudge()
+        {
+            foreach (KeyValuePair<SpaceGunnerHinge, float> pair in calibrationApplied)
+            {
+                SpaceGunnerHinge hinge = pair.Key;
+                if (hinge == null || hinge.Wheel == null)
+                {
+                    continue;
+                }
+
+                float response = 0f;
+                Vector3 baseline;
+                if (referenceGun != null && calibrationBaselines.TryGetValue(hinge, out baseline))
+                {
+                    response = hinge.SignedAngleAroundAxis(baseline, hinge.ToLocalDirection(referenceGun.transform.forward));
+                }
+
+                // sign answers: "AddAngle(+x) rotates the gun which way around this axis?"
+                // response/applied both carry direction, so the mapping is their sign product.
+                hingeSigns[hinge] = Mathf.Abs(response) >= CalibrationMinResponseDegrees
+                    ? Mathf.Sign(response) * Mathf.Sign(pair.Value)
+                    : FallbackSign(hinge);
+                hinge.AddAngle(-pair.Value);
+            }
+            calibrationApplied.Clear();
+            calibrationBaselines.Clear();
+        }
+
+        private void CancelCalibrationInProgress()
+        {
+            foreach (KeyValuePair<SpaceGunnerHinge, float> pair in calibrationApplied)
+            {
+                if (pair.Key != null && pair.Key.Wheel != null)
+                {
+                    pair.Key.AddAngle(-pair.Value);
+                }
+            }
+            calibrationApplied.Clear();
+            calibrationBaselines.Clear();
+            if (calibrationPhase != HingeCalibrationPhase.Done)
+            {
+                calibrationPhase = HingeCalibrationPhase.NotStarted;
+                calibrationTicks = 0;
+            }
+        }
+
+        private bool AllBoundHingesCalibrated()
+        {
+            for (int i = 0; i < orientationHinges.Count; i++)
+            {
+                SpaceGunnerHinge hinge = orientationHinges[i];
+                if (hinge != null && hinge.IsValid && !hingeSigns.ContainsKey(hinge))
+                {
+                    return false;
+                }
+            }
+            for (int i = 0; i < pitchHinges.Count; i++)
+            {
+                SpaceGunnerHinge hinge = pitchHinges[i];
+                if (hinge != null && hinge.IsValid && !hingeSigns.ContainsKey(hinge))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static float ChooseNudgeSign(SpaceGunnerHinge hinge)
+        {
+            // Nudge toward whichever side has more travel left, so a turret parked against
+            // one of its limits still produces a measurable response.
+            SteeringWheel wheel = hinge.Wheel;
+            if (wheel == null || wheel.LimitsSlider == null || !wheel.LimitsSlider.IsActive)
+            {
+                return 1f;
+            }
+
+            float positiveRoom = wheel.LimitsSlider.Max - wheel.AngleToBe;
+            float negativeRoom = wheel.AngleToBe + wheel.LimitsSlider.Min;
+            return positiveRoom >= negativeRoom ? 1f : -1f;
+        }
+
+        private static float FallbackSign(SpaceGunnerHinge hinge)
+        {
+            return hinge.Wheel != null && hinge.Wheel.Flipped ? -1f : 1f;
         }
 
         private void ReleaseHinges()

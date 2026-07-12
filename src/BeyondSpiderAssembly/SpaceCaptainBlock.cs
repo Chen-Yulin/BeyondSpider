@@ -6,8 +6,6 @@ namespace BeyondSpiderAssembly
 {
     public class SpaceCaptainBlock : SpaceBlock
     {
-        public MKey SwitchPriority;
-        public MToggle DefaultAntiAir;
         public MToggle Iff;
 
         private const float FireControlPositionBucket = 10f;
@@ -20,8 +18,6 @@ namespace BeyondSpiderAssembly
         {
             base.SafeAwake();
             gameObject.name = "BeyondSpider Captain";
-            SwitchPriority = AddKey("Switch Priority", "BSCaptainSwitchPriority", KeyCode.T);
-            DefaultAntiAir = AddToggle("Default Anti-Air", "BSCaptainDefaultAntiAir", true);
             Iff = AddToggle("IFF", "BSCaptainIFF", true);
         }
 
@@ -32,7 +28,12 @@ namespace BeyondSpiderAssembly
             if (ship != null)
             {
                 ship.Captain = this;
-                ship.Priority = DefaultAntiAir.IsActive ? CommandPriority.AntiAir : CommandPriority.AntiShip;
+            }
+
+            int localPlayer = StatMaster.isMP ? PlayerData.localPlayer.networkId : 0;
+            if (PlayerID == localPlayer && CaptainRadarView.Instance != null)
+            {
+                CaptainRadarView.Instance.SetOpen(true);
             }
         }
 
@@ -51,22 +52,6 @@ namespace BeyondSpiderAssembly
             }
         }
 
-        public override void SimulateUpdateHost()
-        {
-            ShipState ship = OwnShip();
-            if (ship == null)
-            {
-                return;
-            }
-
-            if (SwitchPriority.IsPressed)
-            {
-                ship.Priority = ship.Priority == CommandPriority.AntiAir
-                    ? CommandPriority.AntiShip
-                    : CommandPriority.AntiAir;
-            }
-        }
-
         public override void SimulateFixedUpdateHost()
         {
             ShipState ship = OwnShip();
@@ -80,12 +65,10 @@ namespace BeyondSpiderAssembly
             // when loading a save, where every block starts simulating in whatever order the engine
             // iterates the machine, unlike incrementally placing a Captain onto an already-simulating
             // ship — OwnShip() returned null there and ship.Captain was never set. This tick keeps
-            // retrying every frame until it succeeds, and only applies the default priority once, on
-            // first claim, so it never fights a player's later manual SwitchPriority toggle.
+            // retrying every frame until it succeeds.
             if (ship.Captain != this)
             {
                 ship.Captain = this;
-                ship.Priority = DefaultAntiAir.IsActive ? CommandPriority.AntiAir : CommandPriority.AntiShip;
             }
 
             ship.LockedSolution = default(FireSolution);

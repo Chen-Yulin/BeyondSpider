@@ -1,5 +1,5 @@
 <Block>
-	<Debug>false</Debug>
+	<Debug>true</Debug>
 	<ID>10</ID>
 	<Name>Railgun Barrel</Name>
 	<Mass>1.35</Mass>
@@ -16,15 +16,17 @@
 		<Scale x="1.35" y="1.35" z="1.35" />
 	</Icon>
 	<Colliders>
-		<BoxCollider>
-			<Position x="0.0" y="0.0" z="0.6" />
-			<Rotation x="0" y="0" z="0" />
-			<Scale x="1.05" y="1.05" z="1.5" />
-		</BoxCollider>
+		<CapsuleCollider>
+			<Position x="0.0" y="0.0" z="1.1" />
+			<Rotation x="0.0" y="0.0" z="0.0" />
+			<Capsule direction="Z" radius="0.05" height="2.0" />
+		</CapsuleCollider>
 	</Colliders>
+	 
 	<BasePoint hasAddingPoint="false">
-		<Stickiness enabled="true" radius="0.9" />
-		<Motion x="false" y="false" z="false" />
+		<Stickiness enabled="true" radius="0.3" />
+		<!-- Can only have motion if sticky -->
+		<Motion x="false" y="false" z="false" /> <!-- Optional -->
 	</BasePoint>
 	<AddingPoints />
 </Block>

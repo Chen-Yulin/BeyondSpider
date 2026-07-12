@@ -1,5 +1,6 @@
 using System;
 using Modding;
+using Modding.Mapper;
 using UnityEngine;
 
 namespace BeyondSpiderAssembly
@@ -10,6 +11,7 @@ namespace BeyondSpiderAssembly
 
 		public override void OnLoad()
 		{
+			CustomMapperTypes.AddMapperType<string, MInfo, InfoSelector>();
 			Root = new GameObject("BeyondSpider Space Combat");
 			UnityEngine.Object.DontDestroyOnLoad(Root);
 			Root.AddComponent<SpaceCombatRuntime>();

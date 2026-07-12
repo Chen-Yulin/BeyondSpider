@@ -5,9 +5,11 @@ namespace BeyondSpiderAssembly
 {
     public class ShieldProjectorBlock : SpaceBlock
     {
-        private const float HyperVelocityThreshold = 2200f;
-        private const float DecelCoefficient = 0.02f;
-        private const float EnergyPerDeltaV = 0.02f;
+        private const float HyperVelocityThreshold = 600f;
+        private const float DecelCoefficient = 80f;
+        // Scaled down to offset DecelCoefficient's cumulative 2000x increase (100x then 20x),
+        // keeping energy cost per unit of actual deltaV removed unchanged from the original.
+        private const float EnergyPerDeltaV = 0.00001f;
         private const float UpkeepBase = 6f;
         private const float UpkeepPerVolume = 0.02f;
         private const int RingCount = 10;
@@ -100,7 +102,12 @@ namespace BeyondSpiderAssembly
                 HeavyNuclearMissileBlock missile = targets[i] as HeavyNuclearMissileBlock;
                 if (missile != null)
                 {
-                    if (!missile.IsAlive || !Contains(missile.Position))
+                    // Check current position (keeps decelerating every tick the missile is actually
+                    // inside) and the next-tick predicted position (catches fast entries the same
+                    // tick they'd otherwise cross the field), so slow-moving intercepts aren't missed
+                    // either way.
+                    Vector3 missilePredictedPos = missile.Position + missile.Velocity * Time.fixedDeltaTime;
+                    if (!missile.IsAlive || (!Contains(missile.Position) && !Contains(missilePredictedPos)))
                     {
                         continue;
                     }
@@ -121,7 +128,9 @@ namespace BeyondSpiderAssembly
                 {
                     // Once deceleration brings a round's speed to/below HyperVelocityThreshold, it stops
                     // being eligible here — the field caps a round down to the threshold, it doesn't fully stop it.
-                    if (!round.IsAlive || round.Velocity.magnitude <= HyperVelocityThreshold || !Contains(round.Position))
+                    Vector3 roundPredictedPos = round.Position + round.Velocity * Time.fixedDeltaTime;
+                    if (!round.IsAlive || round.Velocity.magnitude <= HyperVelocityThreshold ||
+                        (!Contains(round.Position) && !Contains(roundPredictedPos)))
                     {
                         continue;
                     }

@@ -4,11 +4,18 @@ namespace BeyondSpiderAssembly
 {
     public class SpaceShipCore : SpaceBlock, ILockable
     {
-        public MSlider TotalPower;
+        public MInfo TotalPowerInfo;
         public MSlider ArmorPowerShare;
         public MSlider ShieldPowerShare;
         public MSlider WeaponPowerShare;
 
+        private const float MinScaleComponent = 0.05f;
+        // Total reactor output used to be a player-set MSlider; now it's computed directly from
+        // the ship core block's own build-mode volume, same idea as RailgunBarrelBlock's
+        // caliber/bore length/muzzle velocity — see agent-besiege-mod-guide.md.
+        private const float PowerPerVolume = 1200f;
+
+        private float totalPower;
 
         public string DisplayName;
 
@@ -24,16 +31,39 @@ namespace BeyondSpiderAssembly
         {
             base.SafeAwake();
             gameObject.name = "BeyondSpider Ship Core";
-            TotalPower = AddSlider("Total Power", "BSTotalEnergy", 1200f, 200f, 8000f);
+            TotalPowerInfo = AddInfo("Total Power", "BSTotalEnergyInfo");
             ArmorPowerShare = AddSlider("Armor Power Share", "BSArmorShare", 1f, 0f, 5f);
             ShieldPowerShare = AddSlider("Shield Power Share", "BSShieldShare", 2f, 0f, 5f);
             WeaponPowerShare = AddSlider("Weapon Power Share", "BSWeaponShare", 2f, 0f, 5f);
+            RecomputeReactorOutput();
+        }
 
+        private void RecomputeReactorOutput()
+        {
+            Vector3 scale = transform.localScale;
+            float x = Mathf.Max(MinScaleComponent, Mathf.Abs(scale.x));
+            float y = Mathf.Max(MinScaleComponent, Mathf.Abs(scale.y));
+            float z = Mathf.Max(MinScaleComponent, Mathf.Abs(scale.z));
+            totalPower = PowerPerVolume * x * y * z;
+            TotalPowerInfo.Set(totalPower.ToString("F0") + " MW");
+        }
+
+        public override void BuildingUpdate()
+        {
+            base.BuildingUpdate();
+            RecomputeReactorOutput();
+        }
+
+        public override void SimulateFixedUpdateAlways()
+        {
+            base.SimulateFixedUpdateAlways();
+            RecomputeReactorOutput();
         }
 
         public override void OnSimulateStart()
         {
             base.OnSimulateStart();
+            RecomputeReactorOutput();
             GuidHash = BlockBehaviour.BuildingBlock.Guid.GetHashCode();
             DisplayName = "P" + PlayerID + " Core";
             SpaceCombatRegistry.RegisterCore(this);
@@ -47,7 +77,7 @@ namespace BeyondSpiderAssembly
 
         public void ConfigureEnergy(EnergyGrid grid)
         {
-            grid.Configure(TotalPower.Value, ArmorPowerShare.Value, ShieldPowerShare.Value, WeaponPowerShare.Value);
+            grid.Configure(totalPower, ArmorPowerShare.Value, ShieldPowerShare.Value, WeaponPowerShare.Value);
         }
 
         private void ApplyReactorMass()
@@ -56,7 +86,7 @@ namespace BeyondSpiderAssembly
             {
                 return;
             }
-            Body.mass = Mathf.Max(0.3f, 0.3f + Mathf.Pow(TotalPower.Value / 1000f, 1.25f) * 0.8f);
+            Body.mass = Mathf.Max(0.3f, 0.3f + Mathf.Pow(totalPower / 1000f, 1.25f) * 0.8f);
         }
     }
 }

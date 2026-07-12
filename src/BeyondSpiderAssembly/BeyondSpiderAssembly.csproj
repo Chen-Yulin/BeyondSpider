@@ -57,6 +57,7 @@
     <Compile Include="Mod.cs" />
     <Compile Include="SpaceCombatCore.cs" />
     <Compile Include="SpaceBlock.cs" />
+    <Compile Include="MInfo.cs" />
     <Compile Include="SpaceShipCore.cs" />
     <Compile Include="SpaceCaptainBlock.cs" />
     <Compile Include="SuperCapacitorBlock.cs" />

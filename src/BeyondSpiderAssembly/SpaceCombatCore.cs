@@ -20,12 +20,6 @@ namespace BeyondSpiderAssembly
         LargeProjectile
     }
 
-    public enum CommandPriority
-    {
-        AntiAir,
-        AntiShip
-    }
-
     public interface ITrackable
     {
         int PlayerID { get; }
@@ -200,7 +194,6 @@ namespace BeyondSpiderAssembly
     {
         public SpaceShipCore Core;
         public SpaceCaptainBlock Captain;
-        public CommandPriority Priority = CommandPriority.AntiAir;
         public readonly EnergyGrid Energy = new EnergyGrid();
         public readonly List<SuperCapacitorBlock> Capacitors = new List<SuperCapacitorBlock>();
         public readonly List<RadarPanelBlock> Radars = new List<RadarPanelBlock>();
@@ -342,7 +335,6 @@ namespace BeyondSpiderAssembly
 
             GUILayout.BeginArea(window, "BeyondSpider Space Combat", GUI.skin.window);
             GUILayout.Label("Core: " + ship.Core.DisplayName);
-            GUILayout.Label("Captain priority: " + ship.Priority);
             if (ship.Captain != null)
             {
                 GUILayout.Label("Captain IFF: " + (ship.Captain.Iff.IsActive ? "on" : "off"));

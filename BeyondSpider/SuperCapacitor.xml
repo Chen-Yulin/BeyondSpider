@@ -1,5 +1,5 @@
 <Block>
-	<Debug>false</Debug>
+	<Debug>true</Debug>
 	<ID>2</ID>
 	<Name>Super Capacitor</Name>
 	<Mass>0.5</Mass>
@@ -7,7 +7,7 @@
 	<Mesh name="BS SuperCap Mesh">
 		<Position x="0.0" y="0.0" z="0.0" />
 		<Rotation x="90" y="0" z="0" />
-		<Scale x="0.35" y="0.35" z="0.35" />
+		<Scale x="0.9" y="0.9" z="0.9" />
 	</Mesh>
 	<Texture name="BS SuperCap Texture" />
 	<Icon>
@@ -17,13 +17,13 @@
 	</Icon>
 	<Colliders>
 		<BoxCollider>
-			<Position x="0.0" y="0.0" z="0.22" />
+			<Position x="0.0" y="0.0" z="0.26" />
 			<Rotation x="0" y="0" z="0" />
-			<Scale x="0.45" y="0.45" z="0.45" />
+			<Scale x="0.45" y="0.9" z="0.45" />
 		</BoxCollider>
 	</Colliders>
 	<BasePoint hasAddingPoint="false">
-		<Stickiness enabled="true" radius="0.4" />
+		<Stickiness enabled="true" radius="0.2" />
 		<Motion x="false" y="false" z="false" />
 	</BasePoint>
 	<AddingPoints />

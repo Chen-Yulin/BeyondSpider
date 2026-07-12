@@ -63,7 +63,7 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
-            FireSolution solution = (ship.Priority == CommandPriority.AntiShip && ship.LockedSolution.Target != null)
+            FireSolution solution = ship.LockedSolution.Target != null
                 ? ship.LockedSolution
                 : ship.DefensiveSolution;
             if (solution.Target == null)
