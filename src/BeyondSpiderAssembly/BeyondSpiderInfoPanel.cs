@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -35,9 +36,20 @@ namespace BeyondSpiderAssembly
         private Toggle headerToggle;
         private Text headerText;
 
+        // Ship tab strip (ADR-0011 multi-ship): one tab per local-player ship, plus the eye
+        // button that orbits the camera onto the active ship. Rebuilt whenever the set of local
+        // ships changes (partition ran, a ship was added mid-sim, sim stopped).
+        private RectTransform tabRow;
+        private readonly List<ShipState> localShips = new List<ShipState>();
+        private readonly List<ShipState> tabShips = new List<ShipState>();
+        private readonly List<Image> tabBackgrounds = new List<Image>();
+        private readonly List<Text> tabTexts = new List<Text>();
+        private static readonly Color ActiveTabColor = new Color(0.3f, 0.85f, 0.95f, 0.4f);
+
         private Text coreNameText;
         private Text captainIffText;
         private Text totalPowerText;
+        private Text hullText;
         private Image powerShareArmorBar;
         private Image powerShareShieldBar;
         private Image powerShareWeaponBar;
@@ -109,9 +121,17 @@ namespace BeyondSpiderAssembly
             BeyondSpiderUI.AddVerticalLayout(body, 8, 4f);
             BeyondSpiderUI.AddAutoHeight(body);
 
+            tabRow = BeyondSpiderUI.CreateRect(body.transform, "ShipTabs");
+            BeyondSpiderUI.SetRowHeight(tabRow.gameObject, RowHeight);
+            HorizontalLayoutGroup tabLayout = tabRow.gameObject.AddComponent<HorizontalLayoutGroup>();
+            tabLayout.spacing = 4f;
+            tabLayout.childForceExpandWidth = true;
+            tabLayout.childForceExpandHeight = true;
+
             coreNameText = AddTextRow("CoreName", "Core: --");
             captainIffText = AddTextRow("CaptainIff", "Captain IFF: --");
             totalPowerText = AddTextRow("TotalPower", "Total power MW: --");
+            hullText = AddTextRow("Hull", "Hull: --");
 
             AddSectionLabel("POWER SHARE");
             powerShareArmorBar = AddBarRow("PowerShareArmor", "Armor");
@@ -260,8 +280,8 @@ namespace BeyondSpiderAssembly
 
             UpdateDockAnimation();
 
-            int localPlayer = StatMaster.isMP ? PlayerData.localPlayer.networkId : 0;
-            ShipState ship = SpaceCombatRegistry.FindShip(localPlayer);
+            SpaceCombatRegistry.GetShips(SpaceCombatRegistry.LocalPlayerId(), localShips);
+            ShipState ship = SpaceCombatRegistry.ActiveLocalShip;
             bool hasShip = ship != null && ship.Core != null;
             SetVisible(hasShip);
             if (!hasShip)
@@ -269,12 +289,147 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
+            if (!SameShipsAsTabs())
+            {
+                RebuildTabs();
+            }
+            RefreshTabVisuals(ship);
             RefreshFrom(ship);
+        }
+
+        private bool SameShipsAsTabs()
+        {
+            if (localShips.Count != tabShips.Count)
+            {
+                return false;
+            }
+            for (int i = 0; i < localShips.Count; i++)
+            {
+                if (!ReferenceEquals(localShips[i], tabShips[i]))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static string TabName(ShipState ship)
+        {
+            if (ship.Name != null && ship.Name.Length > 0)
+            {
+                return ship.Name;
+            }
+            return ship.Core != null ? ship.Core.DisplayName : "SHIP";
+        }
+
+        // One tab per local ship plus the eye button at the row's right end. Children of a
+        // HorizontalLayoutGroup lay out in creation order, so the eye is simply added last.
+        private void RebuildTabs()
+        {
+            for (int i = tabRow.childCount - 1; i >= 0; i--)
+            {
+                Destroy(tabRow.GetChild(i).gameObject);
+            }
+            tabBackgrounds.Clear();
+            tabTexts.Clear();
+            tabShips.Clear();
+            tabShips.AddRange(localShips);
+
+            for (int i = 0; i < tabShips.Count; i++)
+            {
+                ShipState tabShip = tabShips[i];
+                Image background = BeyondSpiderUI.CreatePanel(tabRow, "Tab" + i, BeyondSpiderUI.BarBackgroundColor);
+                Button button = background.gameObject.AddComponent<Button>();
+                button.targetGraphic = background;
+                button.onClick.AddListener(delegate { SpaceCombatRegistry.ActiveLocalShip = tabShip; });
+
+                Text label = BeyondSpiderUI.CreateLabel(background.transform, "Tab" + i + "Label", TabName(tabShip), 11, TextAnchor.MiddleCenter);
+                RectTransform labelRect = label.rectTransform;
+                labelRect.anchorMin = Vector2.zero;
+                labelRect.anchorMax = Vector2.one;
+                labelRect.offsetMin = Vector2.zero;
+                labelRect.offsetMax = Vector2.zero;
+
+                tabBackgrounds.Add(background);
+                tabTexts.Add(label);
+            }
+
+            Image eyeBackground = BeyondSpiderUI.CreatePanel(tabRow, "EyeButton", BeyondSpiderUI.BarBackgroundColor);
+            LayoutElement eyeElement = eyeBackground.gameObject.AddComponent<LayoutElement>();
+            eyeElement.preferredWidth = 26f;
+            eyeElement.flexibleWidth = 0f;
+            Button eyeButton = eyeBackground.gameObject.AddComponent<Button>();
+            eyeButton.targetGraphic = eyeBackground;
+            eyeButton.onClick.AddListener(OnEyeClicked);
+            Text eyeLabel = BeyondSpiderUI.CreateLabel(eyeBackground.transform, "EyeLabel", "◉", 13, TextAnchor.MiddleCenter);
+            RectTransform eyeLabelRect = eyeLabel.rectTransform;
+            eyeLabelRect.anchorMin = Vector2.zero;
+            eyeLabelRect.anchorMax = Vector2.one;
+            eyeLabelRect.offsetMin = Vector2.zero;
+            eyeLabelRect.offsetMax = Vector2.zero;
+        }
+
+        private void RefreshTabVisuals(ShipState active)
+        {
+            for (int i = 0; i < tabShips.Count; i++)
+            {
+                tabTexts[i].text = TabName(tabShips[i]);
+                tabBackgrounds[i].color = ReferenceEquals(tabShips[i], active)
+                    ? ActiveTabColor
+                    : BeyondSpiderUI.BarBackgroundColor;
+            }
+        }
+
+        // Eye button: orbit the game camera around the active ship — its captain when it has
+        // one, its core otherwise.
+        private void OnEyeClicked()
+        {
+            ShipState ship = SpaceCombatRegistry.ActiveLocalShip;
+            if (ship == null)
+            {
+                return;
+            }
+            BlockBehaviour focus = null;
+            if (ship.Captain != null)
+            {
+                focus = ship.Captain.BlockBehaviour;
+            }
+            if (focus == null && ship.Core != null)
+            {
+                focus = ship.Core.BlockBehaviour;
+            }
+            if (focus == null)
+            {
+                return;
+            }
+            MouseOrbit orbit = FindMouseOrbit();
+            if (orbit != null)
+            {
+                orbit.FocusBlock(focus);
+            }
+        }
+
+        private static MouseOrbit FindMouseOrbit()
+        {
+            Camera gameCamera = Camera.main;
+            if (gameCamera != null)
+            {
+                MouseOrbit orbit = gameCamera.GetComponent<MouseOrbit>();
+                if (orbit != null)
+                {
+                    return orbit;
+                }
+            }
+            return UnityEngine.Object.FindObjectOfType(typeof(MouseOrbit)) as MouseOrbit;
         }
 
         private void RefreshFrom(ShipState ship)
         {
-            coreNameText.text = "Core: " + ship.Core.DisplayName;
+            coreNameText.text = "Ship: " + TabName(ship)
+                + (ship.Cores.Count > 1 ? "  (" + ship.Cores.Count + " cores)" : "");
+            hullText.text = "Hull: " + ship.HullSize.x.ToString("0") + "x"
+                + ship.HullSize.y.ToString("0") + "x" + ship.HullSize.z.ToString("0")
+                + " m  Vol " + ship.HullVolume.ToString("0");
             captainIffText.text = ship.Captain != null
                 ? "Captain IFF: " + (ship.Captain.Iff.IsActive ? "on" : "off")
                 : "Captain IFF: --";

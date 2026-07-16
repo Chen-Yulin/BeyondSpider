@@ -16,9 +16,21 @@ namespace BeyondSpiderAssembly
             Body = GetComponent<Rigidbody>();
         }
 
+        // The ship this block is CONNECTED to (tick-3 connectivity partition, ADR-0011) — no
+        // longer "the player's ship": one player may field several, and each block belongs to
+        // whichever ship's hull it is physically part of.
         protected ShipState OwnShip()
         {
-            return SpaceCombatRegistry.FindShip(PlayerID);
+            return BlockBehaviour == null ? null : SpaceCombatRegistry.ShipOf(BlockBehaviour);
+        }
+
+        // Called by the tick-3 partition when this block lands in a ship's connectivity
+        // component. Subsystem blocks override it with their RegisterSubsystem call. Runs on
+        // host and clients alike (the partition is local to every machine), unlike the
+        // host-gated per-tick registration retries, which stay only as self-healing for blocks
+        // placed onto an already-simulating ship.
+        public virtual void OnAssignedToShip(ShipState ship)
+        {
         }
 
         // MInfo isn't part of Besiege's own AddKey/AddSlider/AddToggle/AddText/AddMenu/AddLimits

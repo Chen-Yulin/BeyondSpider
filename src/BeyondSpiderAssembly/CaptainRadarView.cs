@@ -499,10 +499,11 @@ namespace BeyondSpiderAssembly
             return marker;
         }
 
+        // The radar always shows the ACTIVE local ship — whichever of the local player's ships
+        // the info panel's tab row currently selects (ADR-0011 multi-ship).
         private static ShipState OwnShipState()
         {
-            int localPlayer = StatMaster.isMP ? PlayerData.localPlayer.networkId : 0;
-            return SpaceCombatRegistry.FindShip(localPlayer);
+            return SpaceCombatRegistry.ActiveLocalShip;
         }
 
         private GameObject GetOrCreateMarker(ITrackable target, TrackKind kind)
@@ -895,6 +896,16 @@ namespace BeyondSpiderAssembly
 
         private void Update()
         {
+            // Poll-driven open state: the radar shows exactly when the active ship has a captain.
+            // (Captains used to SetOpen from their own OnSimulateStart/Stop; with multiple ships
+            // per player the view has to follow the tab selection instead.)
+            ShipState active = OwnShipState();
+            bool shouldOpen = active != null && active.Captain != null;
+            if (shouldOpen != IsOpen)
+            {
+                SetOpen(shouldOpen);
+            }
+
             if (!IsOpen)
             {
                 SetRadarOwnsMouse(false);
@@ -1137,7 +1148,7 @@ namespace BeyondSpiderAssembly
             }
 
             ILockable lockable = (ILockable)target;
-            ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(ship.Captain.PlayerID, channel, target.PlayerID, lockable.GuidHash, willLock, true));
+            ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(ship.Captain.PlayerID, ship.CoreGuidHash, channel, target.PlayerID, lockable.GuidHash, willLock, true));
         }
 
         // A click point can land on more than one overlapping marker collider — e.g. a missile

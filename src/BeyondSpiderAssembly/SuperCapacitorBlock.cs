@@ -60,13 +60,18 @@ namespace BeyondSpiderAssembly
             ShipState ship = OwnShip();
             if (ship != null)
             {
-                SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Capacitors);
-                registered = true;
+                OnAssignedToShip(ship);
             }
             if (Body != null)
             {
                 Body.mass = 0.2f + Capacity / 2500f;
             }
+        }
+
+        public override void OnAssignedToShip(ShipState ship)
+        {
+            SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Capacitors);
+            registered = true;
         }
 
         public override void OnSimulateStop()

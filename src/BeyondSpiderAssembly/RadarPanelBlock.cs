@@ -28,9 +28,14 @@ namespace BeyondSpiderAssembly
             ShipState ship = OwnShip();
             if (ship != null)
             {
-                SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Radars);
-                registered = true;
+                OnAssignedToShip(ship);
             }
+        }
+
+        public override void OnAssignedToShip(ShipState ship)
+        {
+            SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Radars);
+            registered = true;
         }
 
         public override void OnSimulateStop()
@@ -76,10 +81,11 @@ namespace BeyondSpiderAssembly
                 {
                     continue;
                 }
-                // Skip our own ship (redundant with CaptainRadarView's always-on self marker at the
-                // origin), but let our own launched heavy missiles through so the captain can watch
-                // them fly toward the target on the radar screen.
-                if (target.PlayerID == PlayerID && target.Kind == TrackKind.Ship)
+                // Skip only THIS ship's own core (redundant with CaptainRadarView's always-on self
+                // marker at the origin). Filtering by PlayerID here would also hide the player's
+                // OTHER ships (ADR-0011 multi-ship) — sister ships must show up as friendly blips.
+                // Own launched heavy missiles pass through too, so the captain can watch them fly.
+                if (target.Kind == TrackKind.Ship && ReferenceEquals(target, ship.Core))
                 {
                     continue;
                 }

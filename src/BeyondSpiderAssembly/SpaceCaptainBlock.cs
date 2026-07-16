@@ -7,6 +7,9 @@ namespace BeyondSpiderAssembly
     public class SpaceCaptainBlock : SpaceBlock
     {
         public MToggle Iff;
+        // Names the ship on the info panel's ship tabs (ADR-0011). Read once per simulation —
+        // MText can't change mid-simulation (see the guide's 输入采样规则).
+        public MText ShipName;
 
         private const float FireControlPositionBucket = 10f;
         private const float FireControlVelocityBucket = 10f;
@@ -27,22 +30,28 @@ namespace BeyondSpiderAssembly
             base.SafeAwake();
             gameObject.name = "BeyondSpider Captain";
             Iff = AddToggle("IFF", "BSCaptainIFF", true);
+            ShipName = AddText("Ship Name", "BSCaptainShipName", "");
+        }
+
+        // The captain's Ship Name text, trimmed; "" when the player left it blank (the ship then
+        // falls back to a per-player ordinal name — see ShipPartition.ResolveShipName).
+        public string ShipDisplayName
+        {
+            get
+            {
+                string value = ShipName == null ? null : ShipName.Value;
+                return value == null ? "" : value.Trim();
+            }
         }
 
         public override void OnSimulateStart()
         {
             base.OnSimulateStart();
-            ShipState ship = OwnShip();
-            if (ship != null)
-            {
-                ship.Captain = this;
-            }
-
-            int localPlayer = StatMaster.isMP ? PlayerData.localPlayer.networkId : 0;
-            if (PlayerID == localPlayer && CaptainRadarView.Instance != null)
-            {
-                CaptainRadarView.Instance.SetOpen(true);
-            }
+            // Usually a no-op at simulate start (the tick-3 partition hasn't run, OwnShip() is
+            // null and the partition assigns captains itself); this covers a captain placed onto
+            // an already-simulating ship. The radar dock is no longer opened here — the view
+            // polls the active ship's captain every frame (CaptainRadarView.Update).
+            TryClaimShip();
         }
 
         public override void OnSimulateStop()
@@ -57,31 +66,40 @@ namespace BeyondSpiderAssembly
                 }
                 ship.Channel0ManualLock = false;
             }
+        }
 
-            int localPlayer = StatMaster.isMP ? PlayerData.localPlayer.networkId : 0;
-            if (PlayerID == localPlayer && CaptainRadarView.Instance != null)
+        // Claim-if-vacant, never steal: the partition already assigned each ship its
+        // deterministic captain, and two captains on one hull must not fight over the seat every
+        // tick. Runs on host and clients alike (this hook, unlike the Host one, ticks on
+        // clients too) so a captain placed mid-simulation seats itself everywhere.
+        public override void SimulateFixedUpdateAlways()
+        {
+            base.SimulateFixedUpdateAlways();
+            TryClaimShip();
+        }
+
+        private void TryClaimShip()
+        {
+            ShipState ship = OwnShip();
+            if (ship == null || ship.Captain != null)
             {
-                CaptainRadarView.Instance.SetOpen(false);
+                return;
+            }
+            ship.Captain = this;
+            if (ShipDisplayName.Length > 0)
+            {
+                ship.Name = ShipDisplayName;
             }
         }
 
         public override void SimulateFixedUpdateHost()
         {
             ShipState ship = OwnShip();
-            if (ship == null)
+            // Only the seated captain runs fire control — a spare captain on the same hull stays
+            // passive until the seat frees up (TryClaimShip above).
+            if (ship == null || !ReferenceEquals(ship.Captain, this))
             {
                 return;
-            }
-
-            // Self-heals against block init order: if SpaceShipCore's OnSimulateStart (which creates
-            // the ShipState) happens to run after this block's own OnSimulateStart — always the case
-            // when loading a save, where every block starts simulating in whatever order the engine
-            // iterates the machine, unlike incrementally placing a Captain onto an already-simulating
-            // ship — OwnShip() returned null there and ship.Captain was never set. This tick keeps
-            // retrying every frame until it succeeds.
-            if (ship.Captain != this)
-            {
-                ship.Captain = this;
             }
 
             PruneDeadChannelTargets(ship);
@@ -106,7 +124,7 @@ namespace BeyondSpiderAssembly
                 {
                     ship.Channel0ManualLock = false;
                 }
-                ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(PlayerID, channel, 0, 0, false, false));
+                ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(PlayerID, ship.CoreGuidHash, channel, 0, 0, false, false));
             }
         }
 
@@ -171,11 +189,11 @@ namespace BeyondSpiderAssembly
             if (best != null)
             {
                 ILockable lockable = (ILockable)best;
-                ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(PlayerID, 0, best.PlayerID, lockable.GuidHash, true, false));
+                ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(PlayerID, ship.CoreGuidHash, 0, best.PlayerID, lockable.GuidHash, true, false));
             }
             else
             {
-                ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(PlayerID, 0, 0, 0, false, false));
+                ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(PlayerID, ship.CoreGuidHash, 0, 0, 0, false, false));
             }
         }
 
@@ -287,22 +305,26 @@ namespace BeyondSpiderAssembly
     {
         public override string Name { get { return "BeyondSpider Captain Lock Net"; } }
 
-        // (shipPlayerId, channel, targetPlayerId, targetGuidHash, hasLock, manual)
-        // `manual` matters only on channel 0: a manual lock pauses the captain's auto threat
-        // selection on every machine (Channel0ManualLock), an auto broadcast doesn't.
+        // (shipPlayerId, shipCoreGuidHash, channel, targetPlayerId, targetGuidHash, hasLock, manual)
+        // shipCoreGuidHash identifies WHICH of the player's ships holds the lock (ADR-0011 — one
+        // player may field several; PlayerID alone no longer names a ship). MP protocol break
+        // against pre-multi-ship builds. `manual` matters only on channel 0: a manual lock pauses
+        // the captain's auto threat selection on every machine (Channel0ManualLock), an auto
+        // broadcast doesn't.
         public static MessageType LockMsg = ModNetworking.CreateMessageType(
-            DataType.Integer, DataType.Integer, DataType.Integer, DataType.Integer, DataType.Boolean, DataType.Boolean);
+            DataType.Integer, DataType.Integer, DataType.Integer, DataType.Integer, DataType.Integer, DataType.Boolean, DataType.Boolean);
 
         public void LockReceiver(Message msg)
         {
             int shipPlayerId = (int)msg.GetData(0);
-            int channel = Mathf.Clamp((int)msg.GetData(1), 0, FireChannels.Count - 1);
-            int targetPlayerId = (int)msg.GetData(2);
-            int targetGuidHash = (int)msg.GetData(3);
-            bool hasLock = (bool)msg.GetData(4);
-            bool manual = (bool)msg.GetData(5);
+            int shipCoreGuidHash = (int)msg.GetData(1);
+            int channel = Mathf.Clamp((int)msg.GetData(2), 0, FireChannels.Count - 1);
+            int targetPlayerId = (int)msg.GetData(3);
+            int targetGuidHash = (int)msg.GetData(4);
+            bool hasLock = (bool)msg.GetData(5);
+            bool manual = (bool)msg.GetData(6);
 
-            ShipState ship = SpaceCombatRegistry.FindShip(shipPlayerId);
+            ShipState ship = SpaceCombatRegistry.FindShip(shipPlayerId, shipCoreGuidHash);
             if (ship == null)
             {
                 return;

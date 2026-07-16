@@ -62,6 +62,7 @@
     <Compile Include="SpaceBalance.cs" />
     <Compile Include="IKineticTarget.cs" />
     <Compile Include="SpaceCombatCore.cs" />
+    <Compile Include="ShipPartition.cs" />
     <Compile Include="SpaceBlock.cs" />
     <Compile Include="MInfo.cs" />
     <Compile Include="FireChannels.cs" />

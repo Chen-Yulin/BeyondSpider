@@ -27,9 +27,14 @@ namespace BeyondSpiderAssembly
             ShipState ship = OwnShip();
             if (ship != null)
             {
-                SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Directors);
-                registered = true;
+                OnAssignedToShip(ship);
             }
+        }
+
+        public override void OnAssignedToShip(ShipState ship)
+        {
+            SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Directors);
+            registered = true;
         }
 
         public override void OnSimulateStop()

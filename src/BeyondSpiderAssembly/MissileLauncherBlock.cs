@@ -213,9 +213,14 @@ namespace BeyondSpiderAssembly
             ShipState ship = OwnShip();
             if (ship != null)
             {
-                SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Launchers);
-                registered = true;
+                OnAssignedToShip(ship);
             }
+        }
+
+        public override void OnAssignedToShip(ShipState ship)
+        {
+            SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Launchers);
+            registered = true;
         }
 
         public override void OnSimulateStop()
@@ -466,7 +471,7 @@ namespace BeyondSpiderAssembly
             box.size = MissileLauncherAssets.ColliderSize[type];
 
             MissileProjectile missile = go.AddComponent<MissileProjectile>();
-            missile.Configure(PlayerID, Team, type, target, netId, channelMask);
+            missile.Configure(PlayerID, Team, type, target, netId, channelMask, OwnShip());
         }
 
         // Monotonic per-session source of shared missile ids. Minted only on the host (ExecuteFire is
@@ -666,6 +671,9 @@ namespace BeyondSpiderAssembly
         private int ownerPlayerID;
         private MPTeam ownerTeam;
         private int type;
+        // The LAUNCHING ship (by connectivity, ADR-0011) — fire control must consult this ship's
+        // channel locks, not "the owner player's ship": one player may field several.
+        private ShipState ownerShip;
 
         private ITrackable target;
         private Rigidbody body;
@@ -685,10 +693,11 @@ namespace BeyondSpiderAssembly
         private const float RetargetInterval = 0.4f;
         private const float MissileDamagePerDeltaV = 0.4f;
 
-        public void Configure(int playerId, MPTeam team, int missileType, ITrackable initialTarget, int netId, int fireChannelMask)
+        public void Configure(int playerId, MPTeam team, int missileType, ITrackable initialTarget, int netId, int fireChannelMask, ShipState launchingShip)
         {
             ownerPlayerID = playerId;
             ownerTeam = team;
+            ownerShip = launchingShip;
             type = Mathf.Clamp(missileType, 0, MissileLauncherAssets.TypeCount - 1);
             target = initialTarget;
             guidHash = netId;
@@ -767,10 +776,10 @@ namespace BeyondSpiderAssembly
 
             // Fire control (re-)selects the target: keep the current one while it's still engageable
             // (alive and hostile, or a captain-commanded lock — see MissileFireControl.CanEngage),
-            // otherwise ask the owner ship's fire control for a fresh one. This is what lets a missile
-            // launched at nothing acquire in flight, a missile whose target dies re-task, and an
-            // interceptor hold onto a locked friendly target it was commanded onto with IFF off.
-            ShipState ship = SpaceCombatRegistry.FindShip(ownerPlayerID);
+            // otherwise ask the LAUNCHING ship's fire control for a fresh one. This is what lets a
+            // missile launched at nothing acquire in flight, a missile whose target dies re-task, and
+            // an interceptor hold onto a locked friendly target it was commanded onto with IFF off.
+            ShipState ship = ownerShip;
             if (!MissileFireControl.CanEngage(ship, target, ownerPlayerID, ownerTeam) && Time.time >= nextRetarget)
             {
                 nextRetarget = Time.time + RetargetInterval;

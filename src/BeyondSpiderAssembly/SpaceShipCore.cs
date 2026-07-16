@@ -75,9 +75,11 @@ namespace BeyondSpiderAssembly
             SpaceCombatRegistry.UnregisterCore(this);
         }
 
-        public void ConfigureEnergy(EnergyGrid grid)
+        // Read by SpaceCombatRuntime, which sums every core in the ship's component (合并出力)
+        // before Configure()-ing the grid with the PRIMARY core's share sliders.
+        public float CurrentTotalPower
         {
-            grid.Configure(totalPower, ArmorPowerShare.Value, ShieldPowerShare.Value, WeaponPowerShare.Value);
+            get { return totalPower; }
         }
 
         private void ApplyReactorMass()

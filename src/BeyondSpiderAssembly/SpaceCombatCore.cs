@@ -209,7 +209,21 @@ namespace BeyondSpiderAssembly
 
     public sealed class ShipState
     {
+        // Which machine this ship was partitioned out of, and its cross-client identity: the
+        // primary core's GuidHash (ADR-0011). PlayerID alone no longer identifies a ship — one
+        // player may field several.
+        public Machine Machine;
+        public int PlayerID;
+        public int CoreGuidHash;
+        // Captain's Ship Name text when set, otherwise a per-player ordinal fallback ("SHIP 2").
+        public string Name = "";
+        // Core-local OBB of the whole hull, measured once by the tick-3 partition.
+        public Vector3 HullSize;
+        public float HullVolume;
+        // Primary core (identity, power-share sliders); Cores holds every core in the component —
+        // a multi-core hull merges reactor output (合并出力).
         public SpaceShipCore Core;
+        public readonly List<SpaceShipCore> Cores = new List<SpaceShipCore>();
         public SpaceCaptainBlock Captain;
         public readonly EnergyGrid Energy = new EnergyGrid();
         public readonly List<SuperCapacitorBlock> Capacitors = new List<SuperCapacitorBlock>();
@@ -237,8 +251,14 @@ namespace BeyondSpiderAssembly
 
     public static class SpaceCombatRegistry
     {
-        private static readonly Dictionary<int, ShipState> ships = new Dictionary<int, ShipState>();
+        private static readonly List<ShipState> ships = new List<ShipState>();
         private static readonly List<ITrackable> trackables = new List<ITrackable>();
+        // Ship membership derived by the tick-3 partition (ShipPartition, ADR-0011). A null value
+        // is a real entry: "this block is known to belong to no ship" (debris, coreless builds),
+        // so repeated OwnShip() lookups on it stay a single dictionary hit.
+        private static readonly Dictionary<BlockBehaviour, ShipState> blockToShip = new Dictionary<BlockBehaviour, ShipState>();
+        private static readonly List<BlockBehaviour> blockKeyBuffer = new List<BlockBehaviour>();
+        private static ShipState activeLocalShip;
 
         public static IList<ITrackable> Trackables
         {
@@ -247,36 +267,184 @@ namespace BeyondSpiderAssembly
 
         public static IEnumerable<ShipState> Ships
         {
-            get { return ships.Values; }
+            get { return ships; }
         }
 
-        public static ShipState RegisterCore(SpaceShipCore core)
+        public static int LocalPlayerId()
         {
-            ShipState state;
-            if (!ships.TryGetValue(core.PlayerID, out state))
+            return StatMaster.isMP ? PlayerData.localPlayer.networkId : 0;
+        }
+
+        // Which of the local player's ships the HUD (info-panel tabs + captain radar) currently
+        // shows. Set by clicking a tab; falls back to the player's first ship whenever the
+        // selection is stale (ship removed, sim restarted).
+        public static ShipState ActiveLocalShip
+        {
+            get
             {
-                state = new ShipState();
-                ships.Add(core.PlayerID, state);
+                int localPlayer = LocalPlayerId();
+                if (activeLocalShip != null && activeLocalShip.PlayerID == localPlayer && ships.Contains(activeLocalShip))
+                {
+                    return activeLocalShip;
+                }
+                activeLocalShip = FindShip(localPlayer);
+                return activeLocalShip;
             }
-            state.Core = core;
+            set { activeLocalShip = value; }
+        }
+
+        // A core registering no longer creates the ShipState — ships are minted by the tick-3
+        // connectivity partition. This just makes the core radar-visible and books its machine
+        // for partitioning.
+        public static void RegisterCore(SpaceShipCore core)
+        {
             RegisterTrackable(core);
-            return state;
+            if (core.BlockBehaviour != null)
+            {
+                ShipPartition.QueueMachine(core.BlockBehaviour.ParentMachine);
+            }
         }
 
         public static void UnregisterCore(SpaceShipCore core)
         {
-            if (ships.ContainsKey(core.PlayerID) && ships[core.PlayerID].Core == core)
-            {
-                ships.Remove(core.PlayerID);
-            }
             UnregisterTrackable(core);
+            for (int i = 0; i < ships.Count; i++)
+            {
+                if (ships[i].Cores.Contains(core))
+                {
+                    RemoveShip(ships[i]);
+                    break;
+                }
+            }
         }
 
+        // Legacy single-ship lookup: the player's first ship. Only the IMGUI fallback HUD still
+        // wants "the" ship of a player; everything identity-sensitive uses the GuidHash overload.
         public static ShipState FindShip(int playerId)
         {
-            ShipState state;
-            ships.TryGetValue(playerId, out state);
-            return state;
+            for (int i = 0; i < ships.Count; i++)
+            {
+                if (ships[i].PlayerID == playerId)
+                {
+                    return ships[i];
+                }
+            }
+            return null;
+        }
+
+        public static ShipState FindShip(int playerId, int coreGuidHash)
+        {
+            for (int i = 0; i < ships.Count; i++)
+            {
+                if (ships[i].PlayerID == playerId && ships[i].CoreGuidHash == coreGuidHash)
+                {
+                    return ships[i];
+                }
+            }
+            return null;
+        }
+
+        public static void GetShips(int playerId, List<ShipState> buffer)
+        {
+            buffer.Clear();
+            for (int i = 0; i < ships.Count; i++)
+            {
+                if (ships[i].PlayerID == playerId)
+                {
+                    buffer.Add(ships[i]);
+                }
+            }
+        }
+
+        // The ship a block belongs to, per the tick-3 connectivity partition. Blocks placed onto
+        // an already-simulating machine miss the map and go through ShipPartition.LateResolve
+        // (a bounded neighbor walk to the nearest block with known membership).
+        public static ShipState ShipOf(BlockBehaviour block)
+        {
+            if (block == null || !block.isSimulating)
+            {
+                return null;
+            }
+            ShipState ship;
+            if (blockToShip.TryGetValue(block, out ship))
+            {
+                return ship;
+            }
+            return ShipPartition.LateResolve(block);
+        }
+
+        public static void AddShip(ShipState ship)
+        {
+            if (ship != null && !ships.Contains(ship))
+            {
+                ships.Add(ship);
+            }
+        }
+
+        public static void MapBlock(BlockBehaviour block, ShipState ship)
+        {
+            if (block != null)
+            {
+                blockToShip[block] = ship;
+            }
+        }
+
+        public static bool TryGetMappedShip(BlockBehaviour block, out ShipState ship)
+        {
+            return blockToShip.TryGetValue(block, out ship);
+        }
+
+        // Forgets every ship and membership entry derived from `machine` — repartition safety,
+        // and teardown when a machine stops simulating.
+        public static void DropMachine(Machine machine)
+        {
+            for (int i = ships.Count - 1; i >= 0; i--)
+            {
+                if (ships[i].Machine == machine)
+                {
+                    RemoveShip(ships[i]);
+                }
+            }
+            blockKeyBuffer.Clear();
+            foreach (KeyValuePair<BlockBehaviour, ShipState> pair in blockToShip)
+            {
+                if (pair.Key == null || pair.Key.ParentMachine == machine)
+                {
+                    blockKeyBuffer.Add(pair.Key);
+                }
+            }
+            for (int i = 0; i < blockKeyBuffer.Count; i++)
+            {
+                blockToShip.Remove(blockKeyBuffer[i]);
+            }
+        }
+
+        private static void RemoveShip(ShipState ship)
+        {
+            ships.Remove(ship);
+            if (activeLocalShip == ship)
+            {
+                activeLocalShip = null;
+            }
+            blockKeyBuffer.Clear();
+            foreach (KeyValuePair<BlockBehaviour, ShipState> pair in blockToShip)
+            {
+                if (pair.Value == ship)
+                {
+                    blockKeyBuffer.Add(pair.Key);
+                }
+            }
+            for (int i = 0; i < blockKeyBuffer.Count; i++)
+            {
+                blockToShip.Remove(blockKeyBuffer[i]);
+            }
+            if (ships.Count == 0)
+            {
+                // Last ship gone (simulation over): also purge the "known shipless" entries and
+                // any pending partition/late-resolve state, so nothing leaks across sim sessions.
+                blockToShip.Clear();
+                ShipPartition.Reset();
+            }
         }
 
         public static void RegisterTrackable(ITrackable trackable)
@@ -320,6 +488,10 @@ namespace BeyondSpiderAssembly
 
         private void FixedUpdate()
         {
+            // Runs the tick-3 connectivity partition for machines whose cores just started
+            // simulating (ADR-0011) — on host and clients alike.
+            ShipPartition.Tick();
+
             foreach (ShipState ship in SpaceCombatRegistry.Ships)
             {
                 if (ship.Core == null || !ship.Core.IsAlive)
@@ -337,7 +509,21 @@ namespace BeyondSpiderAssembly
                     }
                 }
 
-                ship.Core.ConfigureEnergy(ship.Energy);
+                // Every core in the component contributes output (合并出力); the power-share
+                // sliders always come from the primary core.
+                float totalPower = 0f;
+                for (int i = 0; i < ship.Cores.Count; i++)
+                {
+                    SpaceShipCore core = ship.Cores[i];
+                    if (core != null && core.IsAlive)
+                    {
+                        totalPower += core.CurrentTotalPower;
+                    }
+                }
+                ship.Energy.Configure(totalPower,
+                    ship.Core.ArmorPowerShare.Value,
+                    ship.Core.ShieldPowerShare.Value,
+                    ship.Core.WeaponPowerShare.Value);
                 ship.Energy.Tick(Time.fixedDeltaTime);
             }
         }

@@ -145,12 +145,22 @@ namespace BeyondSpiderAssembly
             {
                 return;
             }
-            ship = SpaceCombatRegistry.FindShip(playerID);
-            if (ship != null)
-            {
-                SpaceCombatRegistry.RegisterSubsystem(playerID, this, ship.Armor);
-            }
+            // Membership comes from the tick-3 connectivity partition (ADR-0011): usually null
+            // here (partition hasn't run yet at simulate start) — the FixedUpdate retry below
+            // picks it up; the partition also calls AssignShip directly on every armor block it
+            // finds in a ship's component.
+            AssignShip(SpaceCombatRegistry.ShipOf(bb));
             InitVisual();
+        }
+
+        public void AssignShip(ShipState assigned)
+        {
+            if (assigned == null || ship == assigned)
+            {
+                return;
+            }
+            ship = assigned;
+            SpaceCombatRegistry.RegisterSubsystem(playerID, this, ship.Armor);
         }
 
         private void OnDestroy()
@@ -166,6 +176,11 @@ namespace BeyondSpiderAssembly
             if (bb == null || !bb.isSimulating)
             {
                 return;
+            }
+
+            if (ship == null)
+            {
+                AssignShip(SpaceCombatRegistry.ShipOf(bb));
             }
 
             bool hostAuthoritative = !StatMaster.isMP || !StatMaster.isClient;

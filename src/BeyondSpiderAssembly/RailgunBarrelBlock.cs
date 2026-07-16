@@ -96,9 +96,14 @@ namespace BeyondSpiderAssembly
             ShipState ship = OwnShip();
             if (ship != null)
             {
-                SpaceCombatRegistry.RegisterSubsystem<IShipGun>(PlayerID, this, ship.Guns);
-                registered = true;
+                OnAssignedToShip(ship);
             }
+        }
+
+        public override void OnAssignedToShip(ShipState ship)
+        {
+            SpaceCombatRegistry.RegisterSubsystem<IShipGun>(PlayerID, this, ship.Guns);
+            registered = true;
         }
 
         public override void OnSimulateStop()
@@ -333,11 +338,16 @@ namespace BeyondSpiderAssembly
             ShipState ship = OwnShip();
             if (ship != null)
             {
-                SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Gunners);
-                registered = true;
+                OnAssignedToShip(ship);
             }
             SpaceGunnerNet.Instance.Register(this);
             RefreshBindings(true);
+        }
+
+        public override void OnAssignedToShip(ShipState ship)
+        {
+            SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Gunners);
+            registered = true;
         }
 
         public override void OnSimulateStop()
