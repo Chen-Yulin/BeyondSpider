@@ -56,15 +56,27 @@ namespace BeyondSpiderAssembly
         }
     }
 
-    public class NanoArmorBehaviour : MonoBehaviour
+    public class NanoArmorBehaviour : MonoBehaviour, IKineticTarget
     {
-        private const float IntegrityPool = 420f;
-        private const float StructuralPool = 620f;
-        private const float RepairRatePerSecond = 0.05f;
-        private const float EnergyPerRepairPoint = 4f;
+        // HP pools, repair rate and repair energy all come from the shared balance model so this
+        // block stays in lockstep with weapon damage and the energy exchange rates — see
+        // SpaceBalance. IntegrityPool/StructuralPool define 1 Armor Unit; EnergyPerRepairPoint is
+        // the Armor-bus MJ per integrity HP; RepairRatePerSecond is the fraction of the integrity
+        // pool restored per second at full power.
+        private const float IntegrityPool = SpaceBalance.ArmorIntegrityPool;
+        private const float StructuralPool = SpaceBalance.ArmorStructuralPool;
+        private const float RepairRatePerSecond = SpaceBalance.ArmorRepairFraction;
+        // static readonly (not const): ArmorEnergyPerHP is macro-derived at load, not a compile-time
+        // constant, so this alias can't be const. Pools/rate above stay const — the macro layer
+        // leaves them fixed.
+        private static readonly float EnergyPerRepairPoint = SpaceBalance.ArmorEnergyPerHP;
         private const float HealthyJointForce = 45000f;
         private const float MaxOverlayAlpha = 0.6f;
-        private const float MinRepairSpeedFactor = 0.15f;
+        private const float MinRepairSpeedFactor = SpaceBalance.ArmorMinRepairSpeedFactor;
+        // A hit that fully clears the structural bar lands it at exactly 0 after Clamp01, but
+        // float rounding on a budget==HP breach can leave a hair above; treat anything at/below
+        // this as breached so a penetrating round always flags it (ADR-0007).
+        private const float StructuralBreachEpsilon = 0.002f;
 
         public float Integrity = 1f;
         public float StructuralValue = 1f;
@@ -77,10 +89,46 @@ namespace BeyondSpiderAssembly
         private GameObject overlay;
         private MeshRenderer overlayRenderer;
         private GameObject normalVis;
+        private bool breached;
 
         public float LaserDamageMultiplier
         {
             get { return Mathf.Clamp01(0.05f + 0.95f * (1f - Integrity)); }
+        }
+
+        // Visual split for laser impacts (design brief: 命中完整装甲反射、不完整装甲火花四溅).
+        // The reflected fraction is the complement of LaserDamageMultiplier, i.e. 0.95*Integrity,
+        // so reflection stops dominating below Integrity ~0.53; the threshold sits slightly above
+        // that so the impact flips to sparks just before the beam actually starts winning —
+        // sparks are the player's cue that this coating is worth continuing to burn.
+        private const float LaserMirrorIntegrityThreshold = 0.6f;
+
+        public bool ReflectsLaser
+        {
+            get { return Integrity >= LaserMirrorIntegrityThreshold; }
+        }
+
+        public float LaserReflectivity
+        {
+            get { return Mathf.Clamp01(1f - LaserDamageMultiplier); }
+        }
+
+        // ---- IKineticTarget (ADR-0007) ----
+        // Total structural HP standing between a round and passing through: the integrity layer
+        // (spent first) plus the permanent structural layer.
+        public float RemainingKineticHP
+        {
+            get { return Integrity * IntegrityPool + StructuralValue * StructuralPool; }
+        }
+        public Vector3 KineticVelocity
+        {
+            get { return body != null ? body.velocity : Vector3.zero; }
+        }
+        public bool CanRicochet { get { return true; } }
+        public bool IsBreached { get { return breached; } }
+        public void ApplyKineticDamage(float damage)
+        {
+            ApplyPhysicalDamage(damage);
         }
 
         private void Awake()
@@ -121,7 +169,10 @@ namespace BeyondSpiderAssembly
             }
 
             bool hostAuthoritative = !StatMaster.isMP || !StatMaster.isClient;
-            if (hostAuthoritative && ship != null && Integrity < 1f)
+            // Self-repair only while the structural layer is pristine: the first hit that spills
+            // past integrity into structure permanently disables regen for this block (ADR-0007).
+            // StructuralValue only ever decreases, so this latches off for good once it drops.
+            if (hostAuthoritative && ship != null && Integrity < 1f && StructuralValue >= 1f)
             {
                 float integrityFactor = Mathf.Lerp(MinRepairSpeedFactor, 1f, Integrity);
                 float wantedRepair = RepairRatePerSecond * integrityFactor * Time.fixedDeltaTime;
@@ -131,6 +182,22 @@ namespace BeyondSpiderAssembly
             }
 
             UpdateVisual();
+        }
+
+        // Laser damage is gated by how intact this block still is: a pristine nano coating
+        // refracts most of it away (LaserDamageMultiplier ~0.05 at full Integrity), so lasers
+        // barely scratch fresh armor and only bite once kinetic/blast hits have stripped
+        // Integrity down — the intended firepower synergy from the design brief. The surviving
+        // fraction then runs through the exact same two-stage Integrity->Structural pipeline as
+        // a physical hit.
+        public void ApplyLaserDamage(float damage)
+        {
+            if (damage <= 0f)
+            {
+                return;
+            }
+
+            ApplyPhysicalDamage(damage * LaserDamageMultiplier);
         }
 
         public void ApplyPhysicalDamage(float damage)
@@ -184,9 +251,16 @@ namespace BeyondSpiderAssembly
                 joint.breakTorque = scaled;
             }
 
-            if (StructuralValue <= 0f && body != null)
+            if (!breached && StructuralValue <= StructuralBreachEpsilon)
             {
-                body.AddExplosionForce(400f, transform.position, 3f);
+                // Both bars cleared: the block is breached — it breaks off from the hull AND
+                // becomes permanently transparent to every round from now on (ADR-0007).
+                breached = true;
+                StructuralValue = 0f;
+                if (body != null)
+                {
+                    body.AddExplosionForce(400f, transform.position, 3f);
+                }
             }
         }
 

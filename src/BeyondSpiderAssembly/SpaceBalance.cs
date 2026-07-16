@@ -1,0 +1,164 @@
+using UnityEngine;
+
+namespace BeyondSpiderAssembly
+{
+    // Central balance model for the "energy–firepower–armor" triangle (电磁炮 / 装甲 / 护盾).
+    // Every offensive, defensive and repair number in the mod is derived from the handful of
+    // design constants here instead of being a per-block magic number, so the three systems
+    // stay in a fixed economic relationship no matter how each block is scaled. Sitting ABOVE
+    // this is MacroBalance — four macro dials (进攻效率 / 能量充沛度 / 护盾-装甲占比 / 主动-被动
+    // 防御) that scale the exchange rates and reactor output below; the four are all 1×/neutral
+    // by default, so out of the box SpaceBalance behaves exactly as if MacroBalance weren't there. Before this
+    // existed, each block's damage/energy/HP was an independent placeholder and they didn't
+    // line up (a railgun shot cost ~10x its own weapon budget yet one-shot an armour block 5x
+    // over, and a shield negated it for pocket change).
+    //
+    // Two "algorithms" the user asked for live here:
+    //
+    //  1. Energy-usage algorithm — one exchange rate per bus converts a combat effect into the
+    //     energy it costs. A ship's reactor budget on a bus therefore maps directly onto a
+    //     sustainable rate of that effect (damage/s, repair/s, mitigation/s):
+    //        Weapon bus : WeaponEnergyPerDamage  MJ per point of potential damage dealt
+    //        Armor bus  : ArmorEnergyPerHP        MJ per point of integrity HP repaired
+    //        Shield bus : ShieldEnergyPerDamage   MJ per point of velocity-damage negated
+    //     The rates are deliberately ordered shield > weapon > armour: mitigating a hit
+    //     proactively (area, ignores IFF, removes the whole velocity term) is the dearest,
+    //     repairing afterwards is the cheapest (it only restores the regenerating layer and
+    //     leaves permanent structural loss behind), firing sits in between.
+    //
+    //  2. Damage-and-recovery algorithm — everything is measured in Armor Units (AU), where
+    //     1 AU = one default nano-armour block's total hit points (ArmorUnitHP). Weapons are
+    //     tuned by how many reference shots strip 1 AU; repair by how it compares to a single
+    //     weapon's DPS; shields by how much of a round's velocity-damage they shed per burst.
+    //
+    // Retuning game feel should be done HERE, not in the blocks: the blocks only read these.
+    public static class SpaceBalance
+    {
+        // ---- Reference frame: the Armor Unit (AU) ----
+        // Integrity is the self-repairing layer (refills from the Armor bus); structural is the
+        // permanent layer that weakens joints as it drops and never self-repairs. A hit spends
+        // integrity first, then structural. Total = 1 AU, the yardstick every weapon is rated
+        // against.
+        public const float ArmorIntegrityPool = 400f;
+        public const float ArmorStructuralPool = 600f;
+        public const float ArmorUnitHP = ArmorIntegrityPool + ArmorStructuralPool; // 1000 HP = 1 AU
+
+        // ---- Exchange rates (energy-usage algorithm) ----
+        // Reference rates at the neutral macro point; the live rates below are these scaled by the
+        // MacroBalance multipliers, so the four macro dials reshape the whole economy from one place
+        // (see MacroBalance). At neutral every multiplier is 1 and the live rates equal the Ref*.
+        public const float RefWeaponEnergyPerDamage = 0.6f;   // MJ per potential damage point
+        public const float RefArmorEnergyPerHP = 0.5f;        // MJ per integrity HP restored
+        public const float RefShieldEnergyPerDamage = 0.9f;   // MJ per velocity-damage point negated
+        public const float RefReactorPowerPerVolume = 1200f;  // MW per unit ship-core volume
+
+        public static readonly float WeaponEnergyPerDamage = RefWeaponEnergyPerDamage * MacroBalance.OffenseMult;
+        public static readonly float ArmorEnergyPerHP = RefArmorEnergyPerHP * MacroBalance.ArmorMult;
+        public static readonly float ShieldEnergyPerDamage = RefShieldEnergyPerDamage * MacroBalance.ShieldMult;
+
+        // Reactor output per unit core volume (SpaceShipCore reads this instead of its own constant),
+        // scaled by 能量充沛度. And the multiplier every active-defence block (AA turret / CIWS /
+        // interceptor launcher) applies to its Weapon-bus energy draw, scaled by 主动-被动防御 — the
+        // one hook that makes those ad-hoc-energy blocks respond to the macro layer without touching
+        // their damage models.
+        public static readonly float ReactorPowerPerVolume = RefReactorPowerPerVolume * MacroBalance.ReactorMult;
+        public static readonly float ActiveDefenseEnergyScale = MacroBalance.ActiveMult;
+
+        // ---- Kinetic penetration model (damage side of algorithm 2, ADR-0007) ----
+        // A round's whole damage budget is its velocity term — a scaled kinetic energy — with no
+        // flat floor: damage(v) = mass * v^2 * KineticDamagePerKE, where v is the round's speed
+        // RELATIVE to the target it strikes. Damage dealt equals kinetic energy lost (in the
+        // target's rest frame), so a round bleeds this budget block by block as it penetrates.
+        // KineticDamagePerKE was raised from the old 0.00005 (which sat beside a caliber floor)
+        // so the default 400 mm / 2600 m·s railgun still deals ~560 at the muzzle from the KE
+        // term alone — roughly two shots to strip one AU (400 integrity + 600 structural).
+        public const float KineticDamagePerKE = 0.0000625f;
+
+        // Below this (absolute) speed a round is spent and removed, so slowed / ricocheted rounds
+        // don't linger.
+        public const float RoundStallSpeed = 40f;
+
+        // ---- Ricochet (ADR-0007) ----
+        // A round that fails to penetrate armour (D < remaining HP) at an incidence angle (from
+        // the surface normal) beyond RicochetMinAngleDeg ricochets with probability climbing
+        // linearly to RicochetMaxProbability at a grazing 90°. A ricochet deposits only
+        // RicochetDamageFraction of the surrendered budget as damage, the round keeps
+        // RicochetKEKeep of its budget reflected off the surface, and the rest is dissipated —
+        // the sole case where KE lost exceeds damage dealt. Missiles never ricochet.
+        public const float RicochetMinAngleDeg = 45f;
+        public const float RicochetMaxProbability = 0.9f;
+        public const float RicochetKEKeep = 0.25f;
+        public const float RicochetDamageFraction = 0.5f;
+        public const float RicochetScatterDeg = 6f;
+
+        // ---- Missiles as penetrable targets (ADR-0007) ----
+        // A point-defence interceptor gets this tiny fixed structural HP so a round (or any AA)
+        // can shoot it down; a heavy missile's own Health slider is its structural HP directly.
+        public const float InterceptorStructuralHP = 5f;
+        // Heavy-missile mass and warhead: mass = Health*MissileMassPerHealth + WarheadCharge, so
+        // toughness and payload both add weight; the warhead charge alone drives blast damage
+        // (linear) and blast radius (cube-root of yield). Defaults calibrated so the stock
+        // 650-HP / 24-charge missile keeps its old ~50 mass, ~384 blast damage, ~40 m radius.
+        public const float MissileMassPerHealth = 0.04f;
+        public const float MissileBlastDamagePerCharge = 16f;
+        public const float MissileBlastRadiusScale = 13.9f;
+
+        // ---- Missile guidance (ADR-0008) ----
+        // Both guided munitions steer a single rear nozzle by proportional navigation plus a
+        // closing-speed governor; thrust acts only along the nose and attitude slews at a finite
+        // turn rate. The closing-speed caps bound the terminal turn radius (r = Vc^2 / a_lat), so the
+        // heavy missile — far heavier than an interceptor — gets its own, lower cap or it could never
+        // turn. Retune the feel here; the control law itself lives in MissileGuidance.
+        public const float MissileNavConstant = 4f;             // PN gain N
+        public const float MissileGovernorGain = 2f;            // Kv (1/s), closing-speed regulation
+        public const float MissileClosingSpeedCap = 600f;       // interceptor closing-speed cap (m/s)
+        public const float HeavyMissileClosingSpeedCap = 300f;  // heavy missile's dedicated lower cap
+        public const float InterceptorTurnRate = 180f;          // deg/s
+        public const float HeavyMissileTurnRate = 40f;          // deg/s
+        public const float MissileFuzeRadius = 6f;              // hard proximity detonation (+ target radius)
+        public const float MissileArmingRadius = 14f;           // closest-approach fuze active only inside this
+
+        // ---- Repair model (recovery side of algorithm 2) ----
+        // Integrity refills at ArmorRepairFraction of its pool per second at full power (40 HP/s
+        // for a default block). That per-block rate sits far below any single weapon's DPS, so
+        // focused fire always out-damages the repair on one block; the Armor bus budget only
+        // decides how many DIFFERENT chipped blocks a ship can mend at once. Repair slows toward
+        // ArmorMinRepairSpeedFactor as integrity nears zero (heavy damage is hard to climb out of).
+        public const float ArmorRepairFraction = 0.1f;
+        public const float ArmorMinRepairSpeedFactor = 0.15f;
+
+        // Potential (un-mitigated, un-reflected) muzzle damage of a kinetic round. Used both to
+        // deal damage and to price the shot on the Weapon bus, so the weapon that pays to fire a
+        // round and the shield that pays to stop it agree on exactly what the round is worth.
+        public static float KineticDamage(float caliber, float mass, float speed)
+        {
+            // Pure KE term now (no caliber floor). `caliber` is kept in the signature for callers
+            // that price by nominal muzzle speed, but is unused. See ADR-0007.
+            return mass * speed * speed * KineticDamagePerKE;
+        }
+
+        // Heavy-missile derivations (ADR-0007): toughness (Health) and payload (Warhead Charge)
+        // both add mass; the charge alone drives blast damage and (cube-root) blast radius.
+        public static float MissileMass(float health, float warheadCharge)
+        {
+            return health * MissileMassPerHealth + Mathf.Max(0f, warheadCharge);
+        }
+
+        public static float MissileBlastDamage(float warheadCharge)
+        {
+            return Mathf.Max(0f, warheadCharge) * MissileBlastDamagePerCharge;
+        }
+
+        public static float MissileBlastRadius(float warheadCharge)
+        {
+            return MissileBlastRadiusScale * Mathf.Pow(Mathf.Max(0f, warheadCharge), 1f / 3f);
+        }
+
+        // Energy a burst weapon spends to fire one shot of the given potential damage: a small
+        // fixed floor (capacitor switching / firing overhead) plus the per-damage exchange rate.
+        public static float WeaponShotEnergy(float baseCost, float potentialDamage)
+        {
+            return baseCost + WeaponEnergyPerDamage * Mathf.Max(0f, potentialDamage);
+        }
+    }
+}

@@ -1,0 +1,39 @@
+# Proportional-navigation guidance with a closing-speed governor and single-nozzle thrust
+
+Both guided munitions — the `HeavyNuclearMissileBlock` and the launcher-spawned `SpaceInterceptorMissile` — steered by the same naive law: aim at `target.Position + target.Velocity · 0.35`, add full thrust straight at that point every tick, and rotate the mesh to face velocity as pure cosmetics. Thrust was omnidirectional (`AddForce` in whatever direction the pursuit demanded), so the body's orientation never constrained anything. We replace this with a proportional-navigation guidance stack in which thrust may act **only along the missile's own nose axis** — a single rear nozzle — attitude slews at a finite rate, and a new governor caps closing speed. The finite turn rate is the point: it is what makes lead, miss distance, and dodging emerge instead of being faked.
+
+The guidance output each `FixedUpdate` is one commanded thrust direction, synthesized from two channels. The **lateral channel** is true proportional navigation: with `R = target − missile` and `Vr = target.velocity − missile.velocity`, the line-of-sight rate is `Ω = (R × Vr)/(R·R)` and the steering command is `a_lat = N · (Vr × Ω)` (N = 4). It drives the LOS rate to zero — the constant-bearing, decreasing-range collision course — which both replaces and outperforms the old fixed-lead pursuit and needs no explicit intercept-time solve (the gun-side `SpaceBallistics.EstimateInterceptTime` is untouched but is no longer used by missiles). The **longitudinal channel** is a closing-speed governor. The cap is applied to the LOS-parallel component `Vc = (missile.velocity − target.velocity) · R̂` — *not* the full relative-speed magnitude — because that component alone sets the terminal turn radius `r = Vc² / a_lat` and the impact energy, and PN drives the perpendicular part to zero so `|Vrel| → Vc` at steady state regardless. The governor commands `a_long = Kv · (Vcap − Vc)` along `R̂`; the term goes negative — swinging the synthesized command retrograde — the moment the missile overshoots its cap.
+
+The two channels sum: `a_cmd = a_lat + a_long · R̂`. Its direction is the nozzle-pointing command and its magnitude gates the nozzle. Attitude tracks it kinematically — `rotation = RotateTowards(rotation, LookRotation(a_cmd), MaxTurnRate · dt)` — rather than through torque/PD, keeping the finite turn rate one clean, legible knob and matching the existing habit of writing `transform.rotation` on the simulating body. The nozzle is **bang-bang** — a solid-rocket "开关", never throttled: it burns full thrust along `transform.forward` only when the command exceeds a small deadband *and* the nose is inside a burn cone of the command (`forward · â_cmd > cos 50°`), so a missile mid-flip toward a retrograde brake never thrusts sideways, and a missile sitting at its speed cap on a nulled LOS simply coasts. Because a single nozzle cannot brake without first rotating ~180°, the old "decelerate on lost lock" mode is removed: with no tracked target, a missile that had guidance coasts (nozzle off, holding attitude) and one that never had it boosts straight ahead through its arming window.
+
+PN actually delivers the missile onto the target, so a proximity / closest-approach fuze is now mandatory. It replaces the interceptor's old 5 m kill check and the heavy missile's detonate-only-when-health-reaches-zero behavior: a missile detonates when range drops under `MissileFuzeRadius`, or when the range rate `R · Vr` flips from closing (negative) to opening (positive) while inside `MissileArmingRadius` — the latter is robust to tunneling clean through the fuze sphere between ticks at high closing speed. All of the above lives in one shared `MissileGuidance` helper that both blocks call, ending the copy-pasted guidance the two currently carry.
+
+**Parameters.** New or changed; everything but the two `Thrust` sliders lives in `SpaceBalance` (retune there, not in the blocks):
+
+- `MissileNavConstant N = 4` — shared PN gain.
+- `MissileGovernorGain Kv = 2` (1/s) — shared; sets how hard the nose prioritizes closing/braking over steering.
+- `MissileClosingSpeedCap = 600` m/s — the interceptor's cap.
+- `HeavyMissileClosingSpeedCap = 300` m/s — the heavy missile's **dedicated, lower** cap: its high mass makes a 600 m/s turn radius kilometres wide, so it gets its own slower gate.
+- `InterceptorTurnRate = 180` °/s, `HeavyMissileTurnRate = 40` °/s.
+- `MissileFuzeRadius`, `MissileArmingRadius` — fuze geometry.
+- Heavy missile `Thrust` slider: default **450 → 2400**, ceiling **3000 → 6000**. Interceptor `Thrust` unchanged (850, 100–4000).
+
+**Status**: accepted
+
+**Considered Options**
+
+- *Cap the full relative-speed magnitude `|Vrel|` rather than the closing component `Vc`* — rejected; the perpendicular part is PN's to null, so capping it would make the missile brake for lateral drift it is already erasing. Capping `Vc` targets exactly the turn-radius/energy term. (The brake direction is then `−R̂`; a strict `|Vrel|` clamp would instead brake along `−Vrel̂` — left as a possible future toggle.)
+- *Continuous / throttleable nozzle* — rejected for bang-bang, both because a solid motor is on/off and because bang-bang makes the "喷口开关" the literal control the brief asks for; the alignment cone plus the command deadband give smooth-enough behaviour without a throttle servo.
+- *Torque / PD attitude control with angular inertia* — deferred; kinematic `RotateTowards` makes turn rate the one legible maneuver stat and cannot oscillate. Spin-up lag and overshoot can be layered on later without touching the guidance law.
+- *One global closing-speed cap for both missiles* — rejected. At the heavy missile's stock ~50 mass, even a maxed 3000-thrust motor turns with `r ≈ 360000 / 60 ≈ 6000 m` radius at a 600 m/s cap — effectively a straight line. A dedicated lower cap (300) alongside a raised thrust ceiling is what lets it steer at all.
+- *Keep the lost-lock deceleration mode* — rejected; braking now costs a ~180° flip against the turn-rate limit, so coasting is both cheaper and more physical.
+- *Retain an explicit lead point (the old 0.35 s, or `EstimateInterceptTime`)* — rejected; PN's LOS-rate nulling **is** the lead, and stacking an explicit lead on top double-counts target motion.
+
+**Consequences**
+
+- The heavy nuclear missile becomes a ponderous, largely committed weapon. Mass scales with Health and Warhead Charge, so a max-payload nuke (charge 300 → mass ≈ 326) is nearly ballistic (`r` ~ 12 km at the 300 m/s cap / 2400 thrust) while a light, high-thrust build can genuinely course-correct (`r` ~ 1.9 km at stock 50 mass) — payload trades directly against agility, and point defence keeps a real interception window. Its sluggishness is a thrust/mass consequence; `HeavyMissileTurnRate` is set generously and is not the binding limit.
+- The interceptor's counterplay lives entirely in its turn-rate cap (180 °/s): at 0.5 mass / 850 thrust (`r` ~ 212 m at the 600 cap) its velocity could otherwise vector almost instantly and it would never miss. A fast, jinking heavy missile can now slip past a point-defence salvo.
+- Several dials must be tuned together and only in `SpaceBalance`: `N`, `Kv`, the two caps, the two turn rates, the fuze radii, and the heavy thrust curve. The values above are playtest starting points, not final numbers.
+- The fuze closes the long-standing gap where a heavy missile that reached its target never detonated. The interceptor still damages only what it is assigned; generalizing its warhead to any penetrable target is left as a separate change.
+- With thrust confined to the nose axis, a missile knocked off-axis (shield deceleration, a glancing round) must spend turn-rate time re-pointing before it can thrust again — impacts now bleed guidance time, not merely speed.
+- Any future guided munition uses `MissileGuidance` instead of re-deriving a steering law.

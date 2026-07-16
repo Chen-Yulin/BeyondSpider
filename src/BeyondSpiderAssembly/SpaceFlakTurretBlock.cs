@@ -77,11 +77,13 @@ namespace BeyondSpiderAssembly
         public MMenu Type;
         public MKey SwitchActive;
         public MToggle DefaultActive;
-        public MSlider Range;
         public MSlider EnergyPerSecond;
-        public MSlider TrackingSpeed;
+        public MFireChannel FireChannel;
         public MLimits YawLimit;
+        public MInfo CaliberInfo;
+        public MInfo TrackingSpeedInfo;
         public MInfo MuzzleVelocityInfo;
+        public MInfo RangeInfo;
 
         public int GuidHash { get; private set; }
 
@@ -89,29 +91,47 @@ namespace BeyondSpiderAssembly
         // succeeds, since ShipState may not exist yet when this OnSimulateStart runs.
         private bool registered;
 
-        private const float LargeRoundMass = 0.2f;
         private const float TracerLengthScale = 3f;
+        private const float MinScaleComponent = 0.05f;
 
+        // Tracking speed, muzzle velocity and range used to be three independent player-set
+        // MSliders. Only Energy Use remains a slider; the other three are now derived and shown
+        // read-only via MInfo, recomputed live in build mode — same pattern as
+        // RailgunBarrelBlock.RecomputeBallistics/SuperCapacitorBlock.RecomputeCapacity (see
+        // agent-besiege-mod-guide.md's "扳手菜单里的只读信息:MInfo"). Caliber itself is now also
+        // derived rather than fixed per Type — see RecomputeStats — so tracking speed/muzzle
+        // velocity/range all inherit that scale dependency for free by staying downstream of it.
+        // Tracking speed follows caliber alone (a thicker/heavier mount slews slower); muzzle
+        // velocity follows caliber and Energy Use (spending more power drives the round faster);
+        // range follows muzzle velocity at a fixed flight-time budget, so it does not need its
+        // own Energy Use term.
+        private const float TrackingSpeedCaliberCoefficient = 120f;
+        private const float TrackingSpeedMin = 0.2f;
+        private const float TrackingSpeedMax = 6f;
+        private const float MuzzleVelocityBase = 190f;
+        private const float MuzzleVelocityCaliberCoefficient = 42f;
+        private const float MuzzleVelocityEnergyCoefficient = 0.5f;
+        private const float MuzzleVelocityMin = 280f;
+        private const float MuzzleVelocityMax = 1000f;
+        private const float RangeFlightTimeBudget = 1.6f;
+        private const float RangeMin = 80f;
+        private const float RangeMax = 1800f;
+
+        // Index must match SpaceFlakTurretAssets' per-type arrays (BaseCaliber/GunCount/offsets/
+        // mesh+texture names) — this replaced the old 13-entry caliber x barrel-count preset
+        // list (each entry its own WW2-sourced mesh pair) now that all three models are custom
+        // PaoZuo/PaoTa/PaoGuan sets instead of migrated WW2 assets.
         private readonly List<string> typeList = new List<string>
         {
-            "1x20mm",
-            "3x25mm",
-            "2x40mm",
-            "4x40mm",
-            "2x76mm",
-            "2x100mm",
-            "2x105mm",
-            "2x127mm",
-            "2x113mm",
-            "2x134mm",
-            "UK 4x40mm",
-            "UK 8x40mm",
-            "IJN 2x127mm"
+            "单管火炮",
+            "多管火炮",
+            "近防炮"
         };
 
         private GameObject originVis;
         private GameObject buildBase;
         private GameObject simRoot;
+        private GameObject mountObject;
         private GameObject baseObject;
         private GameObject gunObject;
         private Transform yawTransform;
@@ -120,8 +140,17 @@ namespace BeyondSpiderAssembly
 
         private bool active;
         private bool hasTarget;
+        // The target of the solution this turret is currently steering at — the channel target
+        // when one was selected, else the defensive target. ApplyParticleDamage settles the
+        // small-caliber stream against THIS, not blindly against ship.DefensiveSolution (which
+        // may be a different object than what the barrel is actually pointing at now that
+        // channels exist — ADR-0010).
+        private ITrackable engagedTarget;
         private bool shooting;
         private float caliber = 20f;
+        private float trackingSpeed = 1.5f;
+        private float muzzleVelocity = 460f;
+        private float range = 460f;
         private int gunCount = 1;
         private float gunWidth = 0.1f;
         private float particleRate = 15f;
@@ -142,6 +171,9 @@ namespace BeyondSpiderAssembly
         private bool previousSkinEnabled;
         private float nextStateSync;
         private bool previousShooting;
+        // Cached delegate for FireChannels.TrySelectSolution's per-candidate 射界 test, so the
+        // per-tick channel walk doesn't allocate a fresh delegate every FixedUpdate.
+        private FireChannels.ArcCheck channelArcCheck;
 
         public override void SafeAwake()
         {
@@ -150,11 +182,14 @@ namespace BeyondSpiderAssembly
             SwitchActive = AddKey("Switch Active", "BSSpaceFlakSwitch", KeyCode.None);
             Type = AddMenu("AA Type", 0, typeList, false);
             DefaultActive = AddToggle("Default Active", "BSSpaceFlakActive", true);
-            Range = AddSlider("Range", "BSSpaceFlakRange", 460f, 80f, 1800f);
             EnergyPerSecond = AddSlider("Energy Use", "BSSpaceFlakEnergy", 125f, 10f, 900f);
-            TrackingSpeed = AddSlider("Tracking Speed", "BSSpaceFlakTracking", 1.5f, 0.2f, 6f);
+            FireChannel = AddFireChannel("Fire Channels", "BSSpaceFlakFireChannel");
+            channelArcCheck = IsAimPointInArc;
             YawLimit = AddLimits("Turret Orien Limit", "BSSpaceFlakYawLimit", 90f, 90f, 180f, new FauxTransform(new Vector3(0f, -0.5f, -0.5f), Quaternion.Euler(-90f, 0f, 0f), Vector3.one * 0.0001f));
+            CaliberInfo = AddInfo("Caliber", "BSSpaceFlakCaliberInfo");
+            TrackingSpeedInfo = AddInfo("Tracking Speed", "BSSpaceFlakTrackingInfo");
             MuzzleVelocityInfo = AddInfo("Muzzle Velocity", "BSSpaceFlakVelocityInfo");
+            RangeInfo = AddInfo("Range", "BSSpaceFlakRangeInfo");
             InitBuildModel();
         }
 
@@ -166,6 +201,7 @@ namespace BeyondSpiderAssembly
         public override void BuildingUpdate()
         {
             HoldAppearance(false);
+            RecomputeStats();
         }
 
         public override void OnSimulateStart()
@@ -282,13 +318,14 @@ namespace BeyondSpiderAssembly
         public void ReceiveLargeShot(Vector3 position, Vector3 forward, Vector3 velocity, float shotCaliber, float damage, float lifetime)
         {
             SpaceBallistics.SpawnKineticRound(
-                position, forward, velocity, shotCaliber, damage, 0f, LargeRoundMass, lifetime,
-                PlayerID, Team, InitialVelocity(shotCaliber));
+                position, forward, velocity, shotCaliber, SpaceBalance.KineticDamagePerKE,
+                Mathf.Max(0.05f, shotCaliber / 300f), lifetime, PlayerID, Team, muzzleVelocity);
         }
 
         private void UpdateFireControlTarget()
         {
             hasTarget = false;
+            engagedTarget = null;
             shooting = false;
             if (!active)
             {
@@ -303,21 +340,16 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
-            float muzzleVelocity = InitialVelocity(caliber);
+            // Multi-channel fire control (ADR-0010): pick from this turret's enabled channels —
+            // channel 0 first, then best angle/distance score — with candidates outside the
+            // turret's range or yaw/pitch reach (射界, channelArcCheck) skipped entirely. The
+            // captain's IFF override (CanCommandLockedFireAt) is applied per candidate inside
+            // TrySelectSolution, so a locked friendly/own-team target stays engageable with IFF
+            // off and is never re-filtered by SpaceBallistics.IsHostile() below. No channel
+            // target → same defensive-solution fallback as before.
             FireSolution solution;
-            if (ship.Captain != null && ship.Captain.TryGetLockedFireSolution(GetMuzzlePosition(), muzzleVelocity, out solution))
-            {
-                // A locked target's hostility is gated by the captain's IFF toggle, not a blanket
-                // team check — CanCommandLockedFireAt() already applies that override, so it must
-                // not be re-filtered by SpaceBallistics.IsHostile() below (that would silently undo
-                // the override and refuse to fire on a locked friendly/own-team target).
-                if (!ship.Captain.CanCommandLockedFireAt(solution.Target))
-                {
-                    SetSmallShoot(false);
-                    return;
-                }
-            }
-            else
+            if (!FireChannels.TrySelectSolution(ship, FireChannel.Value, GetMuzzlePosition(), muzzleVelocity,
+                    GetMuzzleForward(), range, channelArcCheck, out solution))
             {
                 if (ship.DefensiveSolution.Target == null || !SpaceBallistics.IsHostile(this, ship.DefensiveSolution.Target))
                 {
@@ -329,32 +361,58 @@ namespace BeyondSpiderAssembly
                 SensorTrack synthetic = new SensorTrack();
                 synthetic.Position = solution.Target.Position;
                 synthetic.Velocity = solution.Target.Velocity;
-                solution.AimPoint = SpaceBallistics.AimPoint(GetMuzzlePosition(), synthetic, muzzleVelocity);
+                // Lead in the ship's frame: the turret inherits the ship's (core's) velocity — ADR 0006.
+                Vector3 shipVelocity = ship.Core != null ? ship.Core.Velocity : Vector3.zero;
+                solution.AimPoint = SpaceBallistics.AimPoint(GetMuzzlePosition(), synthetic, muzzleVelocity, shipVelocity);
             }
 
             Vector3 aimPoint = solution.AimPoint;
             Vector3 delta = aimPoint - GetMuzzlePosition();
-            if (delta.magnitude > Range.Value)
+            if (delta.magnitude > range)
             {
                 SetSmallShoot(false);
                 return;
             }
 
             hasTarget = true;
-            // The Vis hierarchy bakes in a fixed 90 deg X rotation (see InitSimulationModel's
-            // simRoot.localEulerAngles = (90,0,0)), so working through that rotation, the gun's
-            // mechanical rest direction (yaw=0, pitch=0) is transform's local -up, not forward
-            // — and the real yaw axis (the mount's own vertical) is transform.forward. This
-            // matches WW2-Naval's AATurretController.GunYaw/TargetYaw/GunPitch (same Vis
-            // hierarchy this block was ported from), which uses -transform.up as the yaw-zero
-            // reference — generalized here from WW2's world Vector3.up (naval ships are always
-            // upright) to this turret's own transform.forward, since a space-combat ship can be
-            // arbitrarily oriented. The previous Quaternion.LookRotation(delta, transform.up) +
-            // local Euler decomposition implicitly measured yaw/pitch from transform.forward
-            // instead, aiming the turret from the wrong reference frame (off by ~90 degrees).
+            engagedTarget = solution.Target;
+            AimAnglesFor(aimPoint, out targetYaw, out targetPitch);
+        }
+
+        // The Vis hierarchy bakes in a fixed 90 deg X rotation (see InitSimulationModel's
+        // simRoot.localEulerAngles = (90,0,0)), so working through that rotation, the gun's
+        // mechanical rest direction (yaw=0, pitch=0) is transform's local -up, not forward
+        // — and the real yaw axis (the mount's own vertical) is transform.forward. This
+        // matches WW2-Naval's AATurretController.GunYaw/TargetYaw/GunPitch (same Vis
+        // hierarchy this block was ported from), which uses -transform.up as the yaw-zero
+        // reference — generalized here from WW2's world Vector3.up (naval ships are always
+        // upright) to this turret's own transform.forward, since a space-combat ship can be
+        // arbitrarily oriented. The previous Quaternion.LookRotation(delta, transform.up) +
+        // local Euler decomposition implicitly measured yaw/pitch from transform.forward
+        // instead, aiming the turret from the wrong reference frame (off by ~90 degrees).
+        private void AimAnglesFor(Vector3 aimPoint, out float yawDeg, out float pitchDeg)
+        {
+            Vector3 delta = aimPoint - GetMuzzlePosition();
             Vector3 yawAxis = transform.forward;
-            targetYaw = SignedAngleAroundAxis(-transform.up, delta, yawAxis);
-            targetPitch = 90f - Vector3.Angle(delta, yawAxis);
+            yawDeg = SignedAngleAroundAxis(-transform.up, delta, yawAxis);
+            pitchDeg = 90f - Vector3.Angle(delta, yawAxis);
+        }
+
+        // 射界 test for the multi-channel walk: can the mount mechanically point at this aim
+        // point at all? Mirrors DriveTurret's clamps exactly — yaw limits only bind while the
+        // player has the limits toggle in the same state DriveTurret honors, pitch is always
+        // hard-clamped to [-5, 90]. A channel target failing this is skipped outright rather
+        // than parking the turret against its stops (ADR-0010's "目标在射界外则不考虑").
+        private bool IsAimPointInArc(Vector3 aimPoint)
+        {
+            float yawDeg;
+            float pitchDeg;
+            AimAnglesFor(aimPoint, out yawDeg, out pitchDeg);
+            if (YawLimit.UseLimitsToggle.isDefaultValue && (yawDeg < -YawLimit.Min || yawDeg > YawLimit.Max))
+            {
+                return false;
+            }
+            return pitchDeg >= -5f && pitchDeg <= 90f;
         }
 
         private static float SignedAngleAroundAxis(Vector3 from, Vector3 to, Vector3 axis)
@@ -379,7 +437,7 @@ namespace BeyondSpiderAssembly
             if (hasTarget)
             {
                 UpdateRandomError();
-                float speed = caliber < 76f ? TrackingSpeed.Value : TrackingSpeed.Value * 0.5f;
+                float speed = trackingSpeed;
                 realYaw = StepAngle(realYaw, targetYaw, speed);
                 realPitch = StepAngle(realPitch, targetPitch, speed);
                 if (YawLimit.UseLimitsToggle.isDefaultValue)
@@ -402,7 +460,9 @@ namespace BeyondSpiderAssembly
             }
 
             ShipState ship = OwnShip();
-            float energy = ship == null ? 1f : ship.Energy.Request(EnergyBus.Weapon, EnergyPerSecond.Value * Time.fixedDeltaTime);
+            // Active-defence energy draw is scaled by the 主动-被动防御 macro dial (SpaceBalance.
+            // ActiveDefenseEnergyScale, 1 at neutral) alongside CIWS and the interceptor launcher.
+            float energy = ship == null ? 1f : ship.Energy.Request(EnergyBus.Weapon, EnergyPerSecond.Value * Time.fixedDeltaTime * SpaceBalance.ActiveDefenseEnergyScale);
             shooting = energy > 0.15f;
             if (caliber < 76f)
             {
@@ -426,25 +486,29 @@ namespace BeyondSpiderAssembly
         private void ApplyParticleDamage(float energy)
         {
             ShipState ship = OwnShip();
-            if (ship == null || ship.DefensiveSolution.Target == null)
+            if (ship == null || engagedTarget == null)
             {
                 return;
             }
 
-            HeavyNuclearMissileBlock missile = ship.DefensiveSolution.Target as HeavyNuclearMissileBlock;
+            MissileProjectile missile = engagedTarget as MissileProjectile;
             if (missile == null)
             {
                 return;
             }
 
             float distance = Vector3.Distance(GetMuzzlePosition(), missile.Position);
-            if (distance > Range.Value || Vector3.Angle(GetMuzzleForward(), missile.Position - GetMuzzlePosition()) > 10f)
+            if (distance > range || Vector3.Angle(GetMuzzleForward(), missile.Position - GetMuzzlePosition()) > 10f)
             {
                 return;
             }
 
-            float speedPenalty = Mathf.Clamp01(1f - missile.Velocity.magnitude / 900f);
-            float rangeFactor = Mathf.Clamp01(1f - distance / Range.Value);
+            // Penalty scales with how fast the missile is closing on THIS ship, not its world speed —
+            // two ships flying the same way fast shouldn't read as a hard-to-hit target (ADR 0006).
+            Vector3 shipVelocity = ship.Core != null ? ship.Core.Velocity : Vector3.zero;
+            float closingSpeed = (missile.Velocity - shipVelocity).magnitude;
+            float speedPenalty = Mathf.Clamp01(1f - closingSpeed / 900f);
+            float rangeFactor = Mathf.Clamp01(1f - distance / range);
             missile.ApplyDamage((caliber * gunCount) * (0.25f + rangeFactor + speedPenalty) * energy * Time.fixedDeltaTime * 12f);
         }
 
@@ -455,13 +519,17 @@ namespace BeyondSpiderAssembly
             Vector3 forward = GetMuzzleForward();
             Vector3 position = GetMuzzlePosition() + forward + (alternateMuzzle ? -1f : 1f) * gunWidth * pitchTransform.right;
             Vector3 randomForce = RandomForce(caliber);
-            float muzzleVelocity = InitialVelocity(caliber);
             Vector3 velocity = forward * muzzleVelocity + randomForce + (Body == null ? Vector3.zero : Body.velocity);
-            float lifetime = Mathf.Clamp(SpaceBallistics.EstimateInterceptTime(position, position + forward * Range.Value, Vector3.zero, muzzleVelocity) + 2f, 2f, 10f);
+            // Pure flight-time-to-max-range estimate, not a lead solution: shooterVelocity is zero
+            // so this stays a world-frame time and is unaffected by the ship-frame change in ADR 0006.
+            float lifetime = Mathf.Clamp(SpaceBallistics.EstimateInterceptTime(position, position + forward * range, Vector3.zero, muzzleVelocity, Vector3.zero) + 2f, 2f, 10f);
             float damage = caliber * (1.6f + energy);
+            // Flak large rounds are kinetic penetrators too now (ADR-0007): KE from caliber-derived
+            // mass and relative speed, not the old flat `damage` (which now only rides the MP
+            // message below and is ignored on receive).
             SpaceBallistics.SpawnKineticRound(
-                position, forward, velocity, caliber, damage, 0f, LargeRoundMass, lifetime,
-                PlayerID, Team, muzzleVelocity);
+                position, forward, velocity, caliber, SpaceBalance.KineticDamagePerKE,
+                Mathf.Max(0.05f, caliber / 300f), lifetime, PlayerID, Team, muzzleVelocity);
 
             if (StatMaster.isMP)
             {
@@ -498,17 +566,33 @@ namespace BeyondSpiderAssembly
             UpdateAppearance(true);
         }
 
-        // Matches WW2-Naval's AABlock.InitBaseGunObjectBuild exactly: Vis itself IS the base
-        // object, so UpdateAppearance overwrites its own placeholder MeshFilter/MeshRenderer
-        // (from the XML <Mesh>/<Texture> tags) directly instead of hiding it behind a separate
-        // object, and GunBase sits straight under Vis with no extra wrapper. This has to stay
-        // structurally different from the simulation hierarchy below — nesting a build-mode
-        // "Base" object two levels under Vis (inside Vis's own baked Rotation/Scale from the
-        // XML) was compounding that transform into the per-type offset and mispositioning the
-        // model in build mode specifically; simulation mode never had this problem because it
-        // builds under a fresh "myVis" parented straight to the block root, not under Vis.
+        // Matches WW2-Naval's AABlock.InitBaseGunObjectBuild for the outermost piece: Vis
+        // itself IS the mount object now (PaoZuo, the pedestal PaoTa/PaoGuan sit on), so
+        // UpdateAppearance overwrites its own placeholder MeshFilter/MeshRenderer (from the
+        // XML <Mesh>/<Texture> tags) directly instead of hiding it behind a separate object —
+        // previously this role was played by the turret mesh (PaoTa-equivalent) before PaoZuo
+        // existed as its own piece. Base (PaoTa) is a new explicit child since Vis's own mesh
+        // slot is now taken by the mount; GunBase/Gun (PaoGuan) are unchanged. This has to stay
+        // structurally different from the simulation hierarchy below — nesting objects two
+        // levels under Vis (inside Vis's own baked Rotation/Scale from the XML) was compounding
+        // that transform into the per-type offset and mispositioning the model in build mode
+        // specifically; simulation mode never had this problem because it builds under a fresh
+        // "myVis" parented straight to the block root, not under Vis.
         private void EnsureBuildSplitModel(Transform vis)
         {
+            Transform baseTransform = vis.Find("Base");
+            if (baseTransform == null)
+            {
+                GameObject obj = new GameObject("Base");
+                obj.transform.SetParent(vis);
+                obj.transform.localScale = Vector3.one;
+                obj.transform.localPosition = Vector3.zero;
+                obj.transform.localEulerAngles = Vector3.zero;
+                obj.AddComponent<MeshFilter>();
+                obj.AddComponent<MeshRenderer>().material = CloneVisMaterial();
+                baseTransform = obj.transform;
+            }
+
             Transform gunBase = vis.Find("GunBase");
             if (gunBase == null)
             {
@@ -533,18 +617,38 @@ namespace BeyondSpiderAssembly
                 gunTransform = obj.transform;
             }
 
-            baseObject = vis.gameObject;
+            mountObject = vis.gameObject;
+            baseObject = baseTransform.gameObject;
             gunObject = gunTransform.gameObject;
             pitchTransform = gunBase;
         }
 
+        // TurretBsae (PaoZuo, the pedestal the whole mount is bolted to the ship with) has to
+        // sit above BaseBase rather than under it — BaseBase is the yaw pivot (see
+        // ApplyVisualPose), so anything parented under it inherits that spin every tick. A
+        // child of BaseBase can't satisfy "does not rotate with the turret"; only a parent of
+        // BaseBase can. BaseBase/GunBase keep their existing roles (yaw/pitch pivots for
+        // PaoTa/PaoGuan) unchanged, just re-parented one level down from root to TurretBsae.
         private void EnsureSimSplitModel(Transform root)
         {
-            Transform baseBase = root.Find("BaseBase");
+            Transform turretBase = root.Find("TurretBsae");
+            if (turretBase == null)
+            {
+                GameObject turretBaseObject = new GameObject("TurretBsae");
+                turretBaseObject.transform.SetParent(root);
+                turretBaseObject.transform.localScale = Vector3.one;
+                turretBaseObject.transform.localPosition = Vector3.zero;
+                turretBaseObject.transform.localEulerAngles = Vector3.zero;
+                turretBaseObject.AddComponent<MeshFilter>();
+                turretBaseObject.AddComponent<MeshRenderer>().material = CloneVisMaterial();
+                turretBase = turretBaseObject.transform;
+            }
+
+            Transform baseBase = turretBase.Find("BaseBase");
             if (baseBase == null)
             {
                 GameObject baseBaseObject = new GameObject("BaseBase");
-                baseBaseObject.transform.SetParent(root);
+                baseBaseObject.transform.SetParent(turretBase);
                 baseBaseObject.transform.localScale = Vector3.one;
                 baseBaseObject.transform.localPosition = Vector3.zero;
                 baseBaseObject.transform.localEulerAngles = Vector3.zero;
@@ -588,6 +692,7 @@ namespace BeyondSpiderAssembly
                 gunTransform = obj.transform;
             }
 
+            mountObject = turretBase.gameObject;
             baseObject = baseTransform.gameObject;
             gunObject = gunTransform.gameObject;
             yawTransform = baseBase;
@@ -656,6 +761,15 @@ namespace BeyondSpiderAssembly
             // fired shots visibly swung with the gun); disabling shape removes Unity's
             // default 25-degree cone scatter so the stream reads as one coherent line.
             particles.simulationSpace = ParticleSystemSimulationSpace.World;
+            // Fired tracer particles inherit the muzzle's world motion (≈ ship velocity) at birth, so
+            // the stream carries the ship's velocity like the real rounds do — see ADR 0006. Unity
+            // derives the emitter velocity from the muzzle transform's own movement, so this works
+            // identically on host and clients with no ship-velocity value to plumb through. Needs the
+            // World simulation space set above.
+            ParticleSystem.InheritVelocityModule inheritVelocity = particles.inheritVelocity;
+            inheritVelocity.enabled = true;
+            inheritVelocity.mode = ParticleSystemInheritVelocityMode.Initial;
+            inheritVelocity.curve = new ParticleSystem.MinMaxCurve(1f);
             ParticleSystem.ShapeModule shape = particles.shape;
             shape.enabled = false;
             // Default ParticleSystemScalingMode.Hierarchy applies the *whole* parent chain's
@@ -670,9 +784,9 @@ namespace BeyondSpiderAssembly
             // Must equal the muzzleVelocity UpdateFireControlTarget() feeds into lead
             // prediction (and what MuzzleVelocityInfo displays) — otherwise the tracer's
             // travel speed wouldn't match the point the turret aims ahead of a moving target.
-            particles.startSpeed = InitialVelocity(caliber);
+            particles.startSpeed = muzzleVelocity;
             particles.gravityModifier = 0f;
-            particles.startLifetime = Mathf.Clamp(Range.Value / Mathf.Max(1f, InitialVelocity(caliber)), 0.35f, 2f);
+            particles.startLifetime = Mathf.Clamp(range / Mathf.Max(1f, muzzleVelocity), 0.35f, 2f);
             particles.startSize = Mathf.Pow(caliber, 1.5f) / 2000f;
             // No drag: a constant-velocity round in flight, not damped toward some lower speed.
             ParticleSystem.LimitVelocityOverLifetimeModule limit = particles.limitVelocityOverLifetime;
@@ -743,9 +857,9 @@ namespace BeyondSpiderAssembly
 
         private void HoldAppearance(bool simulation)
         {
-            if (simulation && originVis != null)
+            if (simulation)
             {
-                if (originVis.activeSelf)
+                if (originVis != null && originVis.activeSelf)
                 {
                     originVis.SetActive(false);
                 }
@@ -753,11 +867,18 @@ namespace BeyondSpiderAssembly
             }
 
             // Matches WW2-Naval's AABlock.HoldAppearance: this refresh (cluster-LOD/skin/type
-            // change) is build-mode only. ResolveType() below reconfigures the live <76mm AA
-            // tracer ParticleSystem (see ConfigureParticleSystem), and StatMaster.clusterCoded/
-            // OptionsMaster.skinsEnabled do change mid-simulation — letting this run there
-            // reassigns randomSeed/startLifetime/etc. on a system that may be actively playing
-            // and corrupts the small-caliber shot effect.
+            // change) — and, downstream of ResolveType/RecomputeStats, caliber itself — is
+            // build-mode only. The guard above used to be `simulation && originVis != null`,
+            // which meant a null originVis (shouldn't happen — "Vis" is always created from the
+            // block's own XML <Mesh> tag — but nothing enforced it) would fall through into the
+            // block below during actual simulation instead of returning, recomputing caliber
+            // outside the two places it's supposed to update (BuildingUpdate's live build-mode
+            // recompute and OnSimulateStart's one-time lock-in). Unconditional on `simulation`
+            // now so that can't happen regardless of originVis. ResolveType() below reconfigures
+            // the live <76mm AA tracer ParticleSystem (see ConfigureParticleSystem), and
+            // StatMaster.clusterCoded/OptionsMaster.skinsEnabled do change mid-simulation —
+            // letting this run there reassigns randomSeed/startLifetime/etc. on a system that
+            // may be actively playing and corrupts the small-caliber shot effect.
             bool appearanceChanged = false;
             if (previousShowCluster != StatMaster.clusterCoded)
             {
@@ -783,34 +904,40 @@ namespace BeyondSpiderAssembly
             }
         }
 
+        // All 13 Type entries now share one fixed model (PaoZuo/PaoTa/PaoGuan) instead of each
+        // caliber loading its own WW2-sourced mesh pair — Type still drives caliber/gunCount/
+        // damage via ResolveType's switch below, just not the visuals anymore.
         private void UpdateAppearance(bool simulation)
         {
-            if (baseObject == null || gunObject == null)
+            if (mountObject == null || baseObject == null || gunObject == null)
             {
                 return;
             }
 
             int type = Mathf.Clamp(Type.Value, 0, SpaceFlakTurretAssets.TypeCount - 1);
-            baseObject.GetComponent<MeshFilter>().sharedMesh = ModResource.GetMesh(SpaceFlakTurretAssets.AssetName[type] + "-1 Mesh").Mesh;
-            baseObject.GetComponent<MeshRenderer>().material.mainTexture = ModResource.GetTexture(SpaceFlakTurretAssets.AssetName[type] + "-1 Texture").Texture;
-            gunObject.GetComponent<MeshFilter>().sharedMesh = ModResource.GetMesh(SpaceFlakTurretAssets.AssetName[type] + "-2 Mesh").Mesh;
-            gunObject.GetComponent<MeshRenderer>().material.mainTexture = ModResource.GetTexture(SpaceFlakTurretAssets.AssetName[type] + "-2 Texture").Texture;
+            mountObject.GetComponent<MeshFilter>().sharedMesh = ModResource.GetMesh(SpaceFlakTurretAssets.MountMeshName[type]).Mesh;
+            mountObject.GetComponent<MeshRenderer>().material.mainTexture = ModResource.GetTexture(SpaceFlakTurretAssets.MountTextureName[type]).Texture;
+            baseObject.GetComponent<MeshFilter>().sharedMesh = ModResource.GetMesh(SpaceFlakTurretAssets.TurretMeshName[type]).Mesh;
+            baseObject.GetComponent<MeshRenderer>().material.mainTexture = ModResource.GetTexture(SpaceFlakTurretAssets.TurretTextureName[type]).Texture;
+            gunObject.GetComponent<MeshFilter>().sharedMesh = ModResource.GetMesh(SpaceFlakTurretAssets.GunMeshName[type]).Mesh;
+            gunObject.GetComponent<MeshRenderer>().material.mainTexture = ModResource.GetTexture(SpaceFlakTurretAssets.GunTextureName[type]).Texture;
 
-            Vector3 baseOffset = SpaceFlakTurretAssets.BaseOffset[type];
-            Vector3 gunOffset = SpaceFlakTurretAssets.GunOffset[type];
-            Vector3 gunBaseOffset = SpaceFlakTurretAssets.GunBaseOffset[type];
+            // Offsets below are all zero pending in-game tuning — nobody has checked yet where
+            // each type's PaoZuo/PaoTa/PaoGuan pivots actually land once loaded, unlike the old
+            // per-type arrays which were hand-tuned against the WW2 meshes they shipped with.
             if (simulation)
             {
-                baseObject.transform.localPosition = baseOffset;
-                gunObject.transform.localPosition = gunOffset;
-                pitchTransform.localPosition = gunBaseOffset;
+                mountObject.transform.localPosition = SpaceFlakTurretAssets.MountOffset[type];
+                baseObject.transform.localPosition = SpaceFlakTurretAssets.TurretOffset[type];
+                gunObject.transform.localPosition = SpaceFlakTurretAssets.GunOffset[type];
+                pitchTransform.localPosition = SpaceFlakTurretAssets.GunBaseOffset[type];
             }
             else
             {
-                Vector3 offset = baseOffset * 0.2f;
+                Vector3 offset = SpaceFlakTurretAssets.TurretOffset[type] * 0.2f;
                 baseObject.transform.localPosition = new Vector3(offset.x, -offset.z, offset.y);
-                gunObject.transform.localPosition = gunOffset;
-                pitchTransform.localPosition = gunBaseOffset - offset * 5f;
+                gunObject.transform.localPosition = SpaceFlakTurretAssets.GunOffset[type];
+                pitchTransform.localPosition = SpaceFlakTurretAssets.GunBaseOffset[type] - offset * 5f;
             }
         }
 
@@ -832,24 +959,8 @@ namespace BeyondSpiderAssembly
             SpaceFlakTurretAssets.EnsureInitialized();
             gunWidth = SpaceFlakTurretAssets.GunWidth[type];
             particleRate = SpaceFlakTurretAssets.GunSpeed[type];
-            switch (type)
-            {
-                case 1: gunCount = 3; caliber = 25f; break;
-                case 2: gunCount = 2; caliber = 40f; break;
-                case 3: gunCount = 4; caliber = 40f; break;
-                case 4: gunCount = 2; caliber = 76f; break;
-                case 5: gunCount = 2; caliber = 100f; break;
-                case 6: gunCount = 2; caliber = 105f; break;
-                case 7: gunCount = 2; caliber = 127f; break;
-                case 8: gunCount = 2; caliber = 113f; break;
-                case 9: gunCount = 2; caliber = 134f; break;
-                case 10: gunCount = 4; caliber = 40f; break;
-                case 11: gunCount = 8; caliber = 40f; break;
-                case 12: gunCount = 2; caliber = 127f; break;
-                default: gunCount = 1; caliber = 20f; break;
-            }
-            reloadTime = caliber >= 100f ? caliber / 100f * 0.3f : caliber / 76f * 0.12f;
-            MuzzleVelocityInfo.Set(InitialVelocity(caliber).ToString("F0") + " m/s");
+            gunCount = SpaceFlakTurretAssets.GunCount[type];
+            RecomputeStats();
             if (smallShoot != null)
             {
                 ConfigureParticleSystem(smallShoot, particleRate);
@@ -859,6 +970,40 @@ namespace BeyondSpiderAssembly
                     smallShoot.transform.GetChild(0).localScale = new Vector3(gunWidth, 0f, 1f);
                 }
             }
+        }
+
+        // Recomputes caliber and everything downstream of it (tracking speed/muzzle velocity/
+        // range/reload time) from the current Type's BaseCaliber and the block's live scale, plus
+        // the Energy Use slider. Called from ResolveType (type just changed) and unconditionally
+        // every BuildingUpdate tick (scale may have been dragged, or Energy Use, without Type
+        // changing) — mirrors RailgunBarrelBlock.RecomputeBallistics/SuperCapacitorBlock.
+        // RecomputeCapacity, including their MinScaleComponent floor so a squashed-flat build
+        // handle can't divide-by-zero this into NaN. Caliber uses the cube root of the scaled
+        // volume (not the raw volume) so it stays a linear dimension — scaling a block by 2x in
+        // every axis multiplies its volume by 8x but should only double its caliber, and cube
+        // root recovers that "2x" from the 8x volume even under non-uniform x/y/z scale. Bore
+        // length ratio (倍径, L/45 for all three types at rest scale) isn't a separate variable
+        // here — it's a fixed proportion baked into the mesh geometry itself, so it scales
+        // automatically along with everything else and never needs its own term in a formula.
+        private void RecomputeStats()
+        {
+            int type = Mathf.Clamp(Type.Value, 0, SpaceFlakTurretAssets.TypeCount - 1);
+            Vector3 scale = transform.localScale;
+            float x = Mathf.Max(MinScaleComponent, Mathf.Abs(scale.x));
+            float y = Mathf.Max(MinScaleComponent, Mathf.Abs(scale.y));
+            float z = Mathf.Max(MinScaleComponent, Mathf.Abs(scale.z));
+            float scaleFactor = Mathf.Pow(x * y * z, 1f / 3f);
+            caliber = SpaceFlakTurretAssets.BaseCaliber[type] * scaleFactor;
+
+            trackingSpeed = Mathf.Clamp(TrackingSpeedCaliberCoefficient / caliber, TrackingSpeedMin, TrackingSpeedMax);
+            muzzleVelocity = Mathf.Clamp(MuzzleVelocityBase + Mathf.Sqrt(caliber) * MuzzleVelocityCaliberCoefficient + EnergyPerSecond.Value * MuzzleVelocityEnergyCoefficient, MuzzleVelocityMin, MuzzleVelocityMax);
+            range = Mathf.Clamp(muzzleVelocity * RangeFlightTimeBudget, RangeMin, RangeMax);
+            reloadTime = caliber >= 100f ? caliber / 100f * 0.3f : caliber / 76f * 0.12f;
+
+            CaliberInfo.Set(caliber.ToString("F0") + " mm");
+            TrackingSpeedInfo.Set(trackingSpeed.ToString("F2") + " deg/tick");
+            MuzzleVelocityInfo.Set(muzzleVelocity.ToString("F0") + " m/s");
+            RangeInfo.Set(range.ToString("F0") + " m");
         }
 
         private Vector3 GetMuzzlePosition()
@@ -918,11 +1063,6 @@ namespace BeyondSpiderAssembly
             return current + Mathf.Sign(delta) * speed;
         }
 
-        private static float InitialVelocity(float shotCaliber)
-        {
-            return Mathf.Clamp(190f + Mathf.Sqrt(shotCaliber) * 42f, 280f, 720f);
-        }
-
         private static Vector3 RandomForce(float shotCaliber)
         {
             Vector3 randomForce = new Vector3(UnityEngine.Random.value - 0.5f, UnityEngine.Random.value - 0.5f, UnityEngine.Random.value - 0.5f) * 6f / Mathf.Sqrt(shotCaliber);
@@ -931,30 +1071,39 @@ namespace BeyondSpiderAssembly
         }
     }
 
+    // Index 0/1/2 = 单管火炮 (single-barrel) / 多管火炮 (multi-barrel) / 近防炮 (CIWS) throughout
+    // every array in this class — must stay in sync with SpaceFlakTurretBlock.typeList.
     public static class SpaceFlakTurretAssets
     {
-        public const int TypeCount = 13;
+        public const int TypeCount = 3;
 
-        public static readonly string[] AssetName =
-        {
-            "AA-20",
-            "AA-25",
-            "AA-40-x2",
-            "AA-40-x4",
-            "AA-76",
-            "AA-100",
-            "AA-105",
-            "AA-127",
-            "AA-113",
-            "AA-134",
-            "AA-UK-40-x4",
-            "AA-UK-40-x8",
-            "AA-IJN-127"
-        };
+        public static readonly string[] MountMeshName = { "BS FlakTurret Single Mount Mesh", "BS FlakTurret Multi Mount Mesh", "BS FlakTurret Ciws Mount Mesh" };
+        public static readonly string[] MountTextureName = { "BS FlakTurret Single Mount Texture", "BS FlakTurret Multi Mount Texture", "BS FlakTurret Ciws Mount Texture" };
+        public static readonly string[] TurretMeshName = { "BS FlakTurret Single Turret Mesh", "BS FlakTurret Multi Turret Mesh", "BS FlakTurret Ciws Turret Mesh" };
+        public static readonly string[] TurretTextureName = { "BS FlakTurret Single Turret Texture", "BS FlakTurret Multi Turret Texture", "BS FlakTurret Ciws Turret Texture" };
+        public static readonly string[] GunMeshName = { "BS FlakTurret Single Gun Mesh", "BS FlakTurret Multi Gun Mesh", "BS FlakTurret Ciws Gun Mesh" };
+        public static readonly string[] GunTextureName = { "BS FlakTurret Single Gun Texture", "BS FlakTurret Multi Gun Texture", "BS FlakTurret Ciws Gun Texture" };
 
-        public static readonly Vector3[] BaseOffset = new Vector3[TypeCount];
+        // Caliber (mm) at rest scale (1,1,1) — SpaceFlakTurretBlock.RecomputeStats multiplies
+        // this by the cube root of the scaled volume every tick. Bore length ratio (倍径) is
+        // L/45 for all three at rest scale; not tracked separately since it's a fixed proportion
+        // baked into the mesh and scales along with everything else automatically.
+        public static readonly float[] BaseCaliber = { 100f, 100f, 30f };
+
+        // Placeholder — nobody has confirmed actual barrel counts for 多管/近防炮 yet. Only
+        // matters when caliber < 76 (ApplyParticleDamage's small-caliber stream path); at rest
+        // scale that's 近防炮 (30) only, since 单管/多管 start at 100 and scaling only raises
+        // caliber further for a ship built bigger, not smaller.
+        public static readonly int[] GunCount = { 1, 2, 1 };
+
+        // All zero pending in-game tuning — nobody has checked yet where each type's PaoZuo/
+        // PaoTa/PaoGuan pivots actually land once loaded, unlike the old per-type arrays which
+        // were hand-tuned against the WW2 meshes they shipped with.
+        public static readonly Vector3[] MountOffset = new Vector3[TypeCount];
+        public static readonly Vector3[] TurretOffset = new Vector3[TypeCount];
         public static readonly Vector3[] GunOffset = new Vector3[TypeCount];
         public static readonly Vector3[] GunBaseOffset = new Vector3[TypeCount];
+
         public static readonly float[] GunWidth = new float[TypeCount];
         public static readonly float[] GunSpeed = new float[TypeCount];
 
@@ -968,83 +1117,19 @@ namespace BeyondSpiderAssembly
             }
             initialized = true;
 
-            BaseOffset[0] = new Vector3(0.0f, -0.59f, -0.3f);
-            GunBaseOffset[0] = new Vector3(0f, 0.95f, -0.3f);
-            GunOffset[0] = new Vector3(0f, -1.5f, 0f);
-            GunWidth[0] = 0.1f;
-            GunSpeed[0] = 15f;
+            // 单管/多管 sit at caliber >= 76 at rest scale, so these two only feed the tracer
+            // stream if the ship is ever scaled down — placeholders carried over from the old
+            // table's nearest-caliber entries, effectively dead weight until that happens.
+            GunWidth[0] = 0.07f;
+            GunSpeed[0] = 7f;
 
-            BaseOffset[1] = new Vector3(0.0f, 0f, 0f);
-            GunBaseOffset[1] = new Vector3(0f, 1.05f, -0.3f);
-            GunOffset[1] = new Vector3(0f, -1.05f, 0.3f);
-            GunWidth[1] = 2f;
-            GunSpeed[1] = 45f;
+            GunWidth[1] = 0.15f;
+            GunSpeed[1] = 14f;
 
-            BaseOffset[2] = new Vector3(0.0f, -1.3f, 2.55f);
-            GunBaseOffset[2] = new Vector3(0f, 1.55f, 0f);
-            GunOffset[2] = new Vector3(0f, -2.8f, 2.6f);
-            GunWidth[2] = 1.2f;
-            GunSpeed[2] = 26f;
-
-            BaseOffset[3] = new Vector3(0.8f, -1.3f, 2.55f);
-            GunBaseOffset[3] = new Vector3(0f, 1.55f, 0f);
-            GunOffset[3] = new Vector3(0f, -2.8f, 2.6f);
-            GunWidth[3] = 3f;
-            GunSpeed[3] = 52f;
-
-            BaseOffset[4] = new Vector3(0f, -1f, 0.75f);
-            GunBaseOffset[4] = new Vector3(0f, 1.5f, 0f);
-            GunOffset[4] = new Vector3(0f, -2.5f, 0.75f);
-            GunWidth[4] = 0.18f;
-            GunSpeed[4] = 9f;
-
-            BaseOffset[5] = new Vector3(0f, -0.4f, 0.7f);
-            GunBaseOffset[5] = new Vector3(0f, 1.6f, 0f);
-            GunOffset[5] = new Vector3(0f, -2f, 0.75f);
-            GunWidth[5] = 0.07f;
-            GunSpeed[5] = 7f;
-
-            BaseOffset[6] = new Vector3(0f, 0f, 0.3f);
-            GunBaseOffset[6] = new Vector3(0f, 1.6f, -0.7f);
-            GunOffset[6] = new Vector3(0f, -1.6f, 1f);
-            GunWidth[6] = 0.08f;
-            GunSpeed[6] = 7f;
-
-            BaseOffset[7] = new Vector3(0f, -1.1f, -0.2f);
-            GunBaseOffset[7] = new Vector3(0f, 1.7f, 0.5f);
-            GunOffset[7] = new Vector3(0f, -2.8f, -0.5f);
-            GunWidth[7] = 0.2f;
-            GunSpeed[7] = 6f;
-
-            BaseOffset[8] = new Vector3(-0.25f, -2.2f, 0.5f);
-            GunBaseOffset[8] = new Vector3(-0.25f, 0.9f, 0.3f);
-            GunOffset[8] = new Vector3(0f, -3.1f, 0.2f);
-            GunWidth[8] = 0.1f;
-            GunSpeed[8] = 6f;
-
-            BaseOffset[9] = new Vector3(0f, -3.4f, 0.9f);
-            GunBaseOffset[9] = new Vector3(0f, 1.6f, 0.4f);
-            GunOffset[9] = new Vector3(0f, -5f, 0.5f);
-            GunWidth[9] = 0.28f;
-            GunSpeed[9] = 5f;
-
-            BaseOffset[10] = new Vector3(0f, 0f, 0f);
-            GunBaseOffset[10] = new Vector3(0f, 1.6f, 0f);
-            GunOffset[10] = new Vector3(0f, -1.6f, 0f);
-            GunSpeed[10] = 40f;
-            GunWidth[10] = 1.5f;
-
-            BaseOffset[11] = new Vector3(0f, 0f, 0f);
-            GunBaseOffset[11] = new Vector3(0f, 1.5f, 0f);
-            GunOffset[11] = new Vector3(0f, -1.5f, 0f);
-            GunSpeed[11] = 80f;
-            GunWidth[11] = 2.5f;
-
-            BaseOffset[12] = new Vector3(0f, 0f, 0f);
-            GunBaseOffset[12] = new Vector3(0f, 1.8f, 0f);
-            GunOffset[12] = new Vector3(0f, -1.8f, 0f);
-            GunWidth[12] = 0.1f;
-            GunSpeed[12] = 6f;
+            // 近防炮 stays under 76 at rest scale, so this one actually drives the live tracer
+            // stream — picked to read as a dense CIWS burst, not verified in-game.
+            GunWidth[2] = 1.5f;
+            GunSpeed[2] = 50f;
         }
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Modding;
 using UnityEngine;
 
 namespace BeyondSpiderAssembly
@@ -55,6 +56,22 @@ namespace BeyondSpiderAssembly
         public Vector3 AimPoint;
         public float TimeToImpact;
         public float Priority;
+    }
+
+    // Anything the SpaceGunner can aim and trigger. The kinetic RailgunBarrelBlock and the beam
+    // LaserLanceBlock both implement it, so the gunner (and the captain's fire-control lead
+    // prediction it queries) treat every barrel in ship.Guns uniformly. CurrentMuzzleVelocity()
+    // is the one axis fire-control cares about that they differ on: a railgun returns its finite
+    // slug speed, a laser returns an effectively-infinite value so the intercept solution
+    // collapses to "aim straight at the target" (no lead) — see LaserLanceBlock.
+    public interface IShipGun
+    {
+        MText GunGroup { get; }
+        MKey FireKey { get; }
+        MToggle FireControl { get; }
+        Transform transform { get; }
+        Vector3 ApproximateMuzzlePosition();
+        float CurrentMuzzleVelocity();
     }
 
     public sealed class EnergyGrid
@@ -199,16 +216,22 @@ namespace BeyondSpiderAssembly
         public readonly List<RadarPanelBlock> Radars = new List<RadarPanelBlock>();
         public readonly List<DefenseDirectorBlock> Directors = new List<DefenseDirectorBlock>();
         public readonly List<ShieldProjectorBlock> Shields = new List<ShieldProjectorBlock>();
-        public readonly List<CiwsBlock> Ciws = new List<CiwsBlock>();
         public readonly List<SpaceFlakTurretBlock> FlakTurrets = new List<SpaceFlakTurretBlock>();
-        public readonly List<RailgunBarrelBlock> Guns = new List<RailgunBarrelBlock>();
+        // Kinetic railgun barrels and beam laser lances alike (both IShipGun) — the SpaceGunner
+        // binds and aims whatever lands here; see IShipGun.
+        public readonly List<IShipGun> Guns = new List<IShipGun>();
         public readonly List<NanoArmorBehaviour> Armor = new List<NanoArmorBehaviour>();
-        public readonly List<SpaceInterceptorLauncherBlock> Launchers = new List<SpaceInterceptorLauncherBlock>();
+        public readonly List<MissileLauncherBlock> Launchers = new List<MissileLauncherBlock>();
         public readonly List<SpaceGunnerBlock> Gunners = new List<SpaceGunnerBlock>();
         public readonly List<SensorTrack> Tracks = new List<SensorTrack>();
         public FireSolution DefensiveSolution;
-        public ITrackable LockedTarget;
-        public FireSolution LockedSolution;
+        // Multi-channel fire control (ADR-0010): one independent lock per fire channel.
+        // Channel 0 is the air-defence channel (captain auto-locks the highest closing threat,
+        // player may override); channels 1-3 are player-assigned from the radar screen.
+        public readonly ITrackable[] ChannelTargets = new ITrackable[FireChannels.Count];
+        // True while the player holds a hand-placed lock on channel 0 — the captain's auto
+        // threat selection pauses until the lock is cleared or its target dies.
+        public bool Channel0ManualLock;
         public float LastRefreshTime;
     }
 
@@ -321,7 +344,10 @@ namespace BeyondSpiderAssembly
 
         private void OnGUI()
         {
-            if (StatMaster.hudHidden)
+            // BeyondSpiderInfoPanel is the real Besiege-styled replacement for this window; this
+            // stays as the automatic fallback whenever that uGUI panel failed to build (see its
+            // own try/catch), not dead code.
+            if (StatMaster.hudHidden || BeyondSpiderInfoPanel.PanelReady)
             {
                 return;
             }
@@ -348,16 +374,9 @@ namespace BeyondSpiderAssembly
                 + FormatBus(ship, EnergyBus.Shield) + " / "
                 + FormatBus(ship, EnergyBus.Weapon) + " / "
                 + FormatBus(ship, EnergyBus.Universal));
-            GUILayout.Label("Tracks: " + ship.Tracks.Count + "  CIWS: " + ship.Ciws.Count + "  Shields: " + ship.Shields.Count);
+            GUILayout.Label("Tracks: " + ship.Tracks.Count + "  Shields: " + ship.Shields.Count);
             GUILayout.Label("Armor blocks: " + ship.Armor.Count + "  " + FormatArmor(ship));
             ShowArmorHP = GUILayout.Toggle(ShowArmorHP, "Show Armor HP");
-            if (ship.Captain != null && CaptainRadarView.Instance != null)
-            {
-                if (GUILayout.Button(CaptainRadarView.Instance.IsOpen ? "Close Radar" : "Open Radar"))
-                {
-                    CaptainRadarView.Instance.SetOpen(!CaptainRadarView.Instance.IsOpen);
-                }
-            }
             if (ship.DefensiveSolution.Target != null)
             {
                 GUILayout.Label("Defense target: " + ship.DefensiveSolution.Target.Kind + "  TTI "

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Modding;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace BeyondSpiderAssembly
 {
@@ -22,6 +23,19 @@ namespace BeyondSpiderAssembly
         private const int SegmentCount = 64;
         private const float MarkerColliderRadius = 0.3f;
         private const float MarkerScale = 0.3f;
+        // Missile blips are sized per size-tier rather than literally by physical Radius — the three
+        // tiers' radii (3/5/10, see MissileLauncherAssets.MissileRadius) don't read as a clean visual
+        // progression on the tiny radar display, so heavy/medium/small markers instead sit in a fixed
+        // 5:2:1 ratio. Thresholds sit at the midpoints between those three radii so a track still
+        // classifies correctly if that table gets retuned a little.
+        private const float MissileMarkerSmallMaxRadius = 4f;
+        private const float MissileMarkerMediumMaxRadius = 7.5f;
+        private const float MissileMarkerHeavyFactor = 1.25f;
+        private const float MissileMarkerMediumFactor = 0.5f;
+        private const float MissileMarkerSmallFactor = 0.25f;
+        // Lock reticle size as a multiple of the locked marker's scale — >1 so it always encircles the
+        // blip. 1.7 reproduces the old fixed 0.5 reticle for a default 0.3 marker while growing for big ones.
+        private const float LockIconMarkerScaleRatio = 1.7f;
         private const float PanelSize = 420f;
         private const float MinMetersPerUnit = 5f;
         private const float MaxMetersPerUnit = 2000f;
@@ -36,9 +50,30 @@ namespace BeyondSpiderAssembly
         private const float RadarBloomAlpha = 0.16f;
         private const float RadarBloomOffset = 1.5f;
         private const float GlowRadius = DisplayRadius * 1.35f;
-        private const float SweepArcDegrees = 55f;
-        private const float SweepSpeedDegPerSec = 90f;
         private const int VignetteTextureSize = 64;
+        private const int RippleCount = 3;
+        private const float RippleCycleSeconds = 2.4f;
+        private const float RippleMinScale = 0.15f;
+        private const float RippleBaseAlpha = 0.18f;
+        private const float RippleYOffset = 0.015f;
+        private const float DockMargin = 20f;
+        private const float DockHeaderWidth = 140f;
+        private const float DockHeaderHeight = 26f;
+        private const float DockGap = 4f;
+        private const float DockAnimationSeconds = 0.18f;
+        // Fire-channel tab strip (ADR-0010), drawn along the panel's top-left edge: one tab per
+        // channel in that channel's color; the active tab decides which channel a radar click
+        // (un)locks. Dimmed lock reticles keep showing the other channels' locks underneath.
+        private const float TabWidth = 34f;
+        private const float TabHeight = 22f;
+        private const float TabGap = 6f;
+        private const float TabMargin = 8f;
+        private const float ActiveLockIconAlpha = 0.95f;
+        private const float InactiveLockIconAlpha = 0.3f;
+        // Nest multiple reticles on one blip: each higher channel's ring is a bit larger, so a
+        // target locked by several channels shows concentric colored rings instead of one quad
+        // z-fighting another.
+        private const float LockIconChannelScaleStep = 0.22f;
 
         public bool IsOpen;
         public float MetersPerUnit = 50f;
@@ -65,13 +100,23 @@ namespace BeyondSpiderAssembly
         private float guardedCameraFieldOfView;
         private float guardedCameraOrthographicSize;
         private Material markerMaterial;
-        private GameObject lockIcon;
+        private readonly GameObject[] lockIcons = new GameObject[FireChannels.Count];
+        private int activeChannel;
+        private GUIStyle tabLabelStyle;
         private Mesh arrowMesh;
-        private Transform sweepTransform;
-        private float sweepAngle;
+        private Mesh rippleRingMesh;
+        private Transform[] rippleTransforms;
+        private Renderer[] rippleRenderers;
+        private float rippleTime;
         private Texture2D vignetteTexture;
         private Texture2D scanlineTexture;
         private Texture2D framePixel;
+
+        private bool collapsed;
+        private float dockProgress;
+        private RectTransform radarBody;
+        private Toggle radarHeaderToggle;
+        private Text radarHeaderText;
 
         private readonly List<GameObject> arrowPool = new List<GameObject>();
         private readonly List<GameObject> spherePool = new List<GameObject>();
@@ -85,6 +130,15 @@ namespace BeyondSpiderAssembly
             arrowMesh = BuildArrowMesh();
             BuildScene();
             BuildOverlayTextures();
+            try
+            {
+                BuildRadarDock();
+            }
+            catch (System.Exception ex)
+            {
+                radarBody = null;
+                Debug.LogWarning("BeyondSpider: radar dock failed to build, falling back to legacy frame. " + ex);
+            }
         }
 
         private void BuildScene()
@@ -118,8 +172,8 @@ namespace BeyondSpiderAssembly
 
             BuildGlow();
             BuildGrid();
-            BuildSweep();
-            BuildLockIcon();
+            BuildRipples();
+            BuildLockIcons();
         }
 
         private void BuildGrid()
@@ -225,37 +279,43 @@ namespace BeyondSpiderAssembly
             renderer.material = new Material(Shader.Find("Particles/Additive"));
         }
 
-        // A slowly rotating sweep wedge — the classic radar/hologram "scanning" cue — built as a
-        // fan whose vertex alpha fades from bright at the leading edge to transparent at the
-        // trailing edge. sweepTransform's yaw is advanced continuously in UpdateSweep().
-        private void BuildSweep()
+        // A soft ring built once at unit radius (three vertex rings — inner/mid/outer — so it fades
+        // in on the way out from the center and fades out again at its own leading edge, no hard
+        // cutoff either way). RippleCount instances of this same shared mesh are scaled up from the
+        // center to DisplayRadius on a loop in UpdateRipples(), the classic sonar-ping cue.
+        private Mesh BuildRippleRingMesh()
         {
-            GameObject sweepObject = new GameObject("BS Radar Sweep");
-            sweepObject.transform.SetParent(pocketRoot, false);
-            sweepObject.transform.localPosition = new Vector3(0f, 0.01f, 0f);
-            sweepObject.transform.localRotation = Quaternion.identity;
-            sweepTransform = sweepObject.transform;
-
-            Color leading = new Color(0.55f, 0.95f, 0.95f, 0.5f);
-            Color trailing = new Color(0.55f, 0.95f, 0.95f, 0f);
-            const int sweepSegments = 20;
+            const float innerFrac = 0.75f;
+            const float midFrac = 0.9f;
+            const float outerFrac = 1f;
+            Color edge = new Color(0.55f, 0.95f, 0.95f, 0f);
+            Color peak = new Color(0.55f, 0.95f, 0.95f, 1f);
 
             List<Vector3> vertices = new List<Vector3>();
             List<Color> colors = new List<Color>();
             List<int> triangles = new List<int>();
 
-            vertices.Add(Vector3.zero);
-            colors.Add(leading);
-            for (int seg = 0; seg <= sweepSegments; seg++)
+            for (int seg = 0; seg <= SegmentCount; seg++)
             {
-                float t = (float)seg / sweepSegments;
-                float angle = -t * SweepArcDegrees * Mathf.Deg2Rad;
-                vertices.Add(new Vector3(DisplayRadius * Mathf.Cos(angle), 0f, DisplayRadius * Mathf.Sin(angle)));
-                colors.Add(Color.Lerp(leading, trailing, t));
+                float angle = seg * Mathf.PI * 2f / SegmentCount;
+                float cos = Mathf.Cos(angle);
+                float sin = Mathf.Sin(angle);
+                vertices.Add(new Vector3(innerFrac * cos, 0f, innerFrac * sin));
+                colors.Add(edge);
+                vertices.Add(new Vector3(midFrac * cos, 0f, midFrac * sin));
+                colors.Add(peak);
+                vertices.Add(new Vector3(outerFrac * cos, 0f, outerFrac * sin));
+                colors.Add(edge);
             }
-            for (int seg = 0; seg < sweepSegments; seg++)
+
+            for (int seg = 0; seg < SegmentCount; seg++)
             {
-                AddFanTriangle(triangles, 0, 1 + seg, 1 + seg + 1);
+                int a0 = seg * 3;
+                int b0 = (seg + 1) * 3;
+                AddFanTriangle(triangles, a0, a0 + 1, b0 + 1);
+                AddFanTriangle(triangles, a0, b0 + 1, b0);
+                AddFanTriangle(triangles, a0 + 1, a0 + 2, b0 + 2);
+                AddFanTriangle(triangles, a0 + 1, b0 + 2, b0 + 1);
             }
 
             Mesh mesh = new Mesh();
@@ -263,25 +323,49 @@ namespace BeyondSpiderAssembly
             mesh.colors = colors.ToArray();
             mesh.triangles = triangles.ToArray();
             mesh.RecalculateBounds();
-
-            MeshFilter filter = sweepObject.AddComponent<MeshFilter>();
-            filter.sharedMesh = mesh;
-            MeshRenderer renderer = sweepObject.AddComponent<MeshRenderer>();
-            renderer.material = new Material(Shader.Find("Particles/Additive"));
+            return mesh;
         }
 
-        private void UpdateSweep()
+        private void BuildRipples()
         {
-            if (sweepTransform == null)
+            rippleRingMesh = BuildRippleRingMesh();
+            rippleTransforms = new Transform[RippleCount];
+            rippleRenderers = new Renderer[RippleCount];
+            for (int i = 0; i < RippleCount; i++)
+            {
+                GameObject rippleObject = new GameObject("BS Radar Ripple " + i);
+                rippleObject.transform.SetParent(pocketRoot, false);
+                rippleObject.transform.localPosition = new Vector3(0f, RippleYOffset, 0f);
+                rippleObject.transform.localRotation = Quaternion.identity;
+
+                MeshFilter filter = rippleObject.AddComponent<MeshFilter>();
+                filter.sharedMesh = rippleRingMesh;
+                MeshRenderer renderer = rippleObject.AddComponent<MeshRenderer>();
+                renderer.material = new Material(Shader.Find("Particles/Additive"));
+
+                rippleTransforms[i] = rippleObject.transform;
+                rippleRenderers[i] = renderer;
+            }
+        }
+
+        private void UpdateRipples()
+        {
+            if (rippleTransforms == null)
             {
                 return;
             }
-            sweepAngle += Time.deltaTime * SweepSpeedDegPerSec;
-            if (sweepAngle > 360f)
+
+            rippleTime += Time.deltaTime;
+            for (int i = 0; i < rippleTransforms.Length; i++)
             {
-                sweepAngle -= 360f;
+                float phase = rippleTime / RippleCycleSeconds + (float)i / RippleCount;
+                float t = phase - Mathf.Floor(phase);
+                float radius = Mathf.Lerp(RippleMinScale, DisplayRadius, t);
+                float alpha = (1f - t) * RippleBaseAlpha;
+
+                rippleTransforms[i].localScale = Vector3.one * radius;
+                rippleRenderers[i].material.SetColor("_TintColor", new Color(1f, 1f, 1f, alpha));
             }
-            sweepTransform.localRotation = Quaternion.Euler(0f, sweepAngle, 0f);
         }
 
         // Procedural textures for the OnGUI overlay pass (DrawRadarTexture/DrawPanelFrame) — a
@@ -318,17 +402,23 @@ namespace BeyondSpiderAssembly
             framePixel.Apply();
         }
 
-        private void BuildLockIcon()
+        // One reticle quad per fire channel, tinted with the channel's color every frame in
+        // SyncMarkers (active channel bright, others dimmed).
+        private void BuildLockIcons()
         {
-            lockIcon = GameObject.CreatePrimitive(PrimitiveType.Quad);
-            lockIcon.name = "BS Radar Lock Icon";
-            Object.DestroyImmediate(lockIcon.GetComponent<Collider>());
-            lockIcon.transform.SetParent(pocketRoot, false);
-            lockIcon.transform.localScale = Vector3.one * 0.5f;
-            MeshRenderer renderer = lockIcon.GetComponent<MeshRenderer>();
-            renderer.material = new Material(Shader.Find("Particles/Additive"));
-            renderer.material.mainTexture = ModResource.GetTexture("BS Migrated AA Lock Texture").Texture;
-            lockIcon.SetActive(false);
+            for (int channel = 0; channel < FireChannels.Count; channel++)
+            {
+                GameObject icon = GameObject.CreatePrimitive(PrimitiveType.Quad);
+                icon.name = "BS Radar Lock Icon " + channel;
+                Object.DestroyImmediate(icon.GetComponent<Collider>());
+                icon.transform.SetParent(pocketRoot, false);
+                icon.transform.localScale = Vector3.one * 0.5f;
+                MeshRenderer renderer = icon.GetComponent<MeshRenderer>();
+                renderer.material = new Material(Shader.Find("Particles/Additive"));
+                renderer.material.mainTexture = ModResource.GetTexture("BS Migrated AA Lock Texture").Texture;
+                icon.SetActive(false);
+                lockIcons[channel] = icon;
+            }
         }
 
         private static Mesh BuildArrowMesh()
@@ -453,7 +543,10 @@ namespace BeyondSpiderAssembly
                 spherePool[i].SetActive(false);
             }
             activeMarkers.Clear();
-            lockIcon.SetActive(false);
+            for (int channel = 0; channel < lockIcons.Length; channel++)
+            {
+                lockIcons[channel].SetActive(false);
+            }
         }
 
         public ITrackable TrackableFor(GameObject marker)
@@ -507,6 +600,22 @@ namespace BeyondSpiderAssembly
             return new Vector3(radarDirection.x, 0f, radarDirection.z);
         }
 
+        // Ship markers stay a fixed size; a missile marker is sized by tier so the three missile sizes
+        // show up as distinctly-sized dots. Only HeavyMissile tracks reach here besides ships (the
+        // radar draws no other kind), so anything else falls back to MarkerScale.
+        private static float MarkerScaleFor(SensorTrack track)
+        {
+            if (track.Kind != TrackKind.HeavyMissile || track.Target == null)
+            {
+                return MarkerScale;
+            }
+            float radius = track.Target.Radius;
+            float factor = radius < MissileMarkerSmallMaxRadius ? MissileMarkerSmallFactor
+                : radius < MissileMarkerMediumMaxRadius ? MissileMarkerMediumFactor
+                : MissileMarkerHeavyFactor;
+            return MarkerScale * factor;
+        }
+
         private void SyncMarkers()
         {
             ShipState ship = OwnShipState();
@@ -541,7 +650,7 @@ namespace BeyondSpiderAssembly
                 seen.Add(track.Target);
                 GameObject marker = GetOrCreateMarker(track.Target, track.Kind);
                 marker.SetActive(true);
-                marker.transform.localScale = Vector3.one * MarkerScale;
+                marker.transform.localScale = Vector3.one * MarkerScaleFor(track);
 
                 Vector3 relative = CaptainLocalToRadarSpace(captain.InverseTransformVector(track.Position - captain.position));
                 Vector3 displayPos = relative / MetersPerUnit;
@@ -577,26 +686,66 @@ namespace BeyondSpiderAssembly
                 activeMarkers.Remove(stale[i]);
             }
 
-            GameObject lockedMarker;
-            if (ship.LockedTarget != null && activeMarkers.TryGetValue(ship.LockedTarget, out lockedMarker))
+            // One reticle per fire channel, in the channel's color: the active tab's lock draws
+            // bright, the other channels' locks stay visible but dimmed, so the player always
+            // sees the whole fire-control picture regardless of which tab is selected.
+            for (int channel = 0; channel < FireChannels.Count; channel++)
             {
-                lockIcon.SetActive(true);
-                lockIcon.transform.localPosition = lockedMarker.transform.localPosition;
+                GameObject icon = lockIcons[channel];
+                ITrackable target = ship.ChannelTargets[channel];
+                GameObject lockedMarker;
+                if (target == null || !target.IsAlive || !activeMarkers.TryGetValue(target, out lockedMarker))
+                {
+                    icon.SetActive(false);
+                    continue;
+                }
+
+                icon.SetActive(true);
+                icon.transform.localPosition = lockedMarker.transform.localPosition;
+                // Size the reticle to the locked marker so it always frames the blip. A fixed size was
+                // smaller than a scaled-up heavy-missile dot and vanished behind it; scaling a bit larger
+                // than the marker keeps the reticle encircling whatever it's locked onto, big or small.
+                // Higher channels ring slightly wider so several locks on one blip nest concentrically.
+                float ratio = LockIconMarkerScaleRatio * (1f + LockIconChannelScaleStep * channel);
+                icon.transform.localScale = Vector3.one * (lockedMarker.transform.localScale.x * ratio);
                 // Billboard toward the orbiting radar camera every frame — the quad's own rotation
                 // never changes otherwise, so it would render edge-on/backwards once the player
                 // orbits away from whatever angle it happened to be built facing.
-                lockIcon.transform.rotation = radarCamera.transform.rotation;
-            }
-            else
-            {
-                lockIcon.SetActive(false);
+                icon.transform.rotation = radarCamera.transform.rotation;
+
+                Color tint = FireChannels.Colors[channel];
+                tint.a = channel == activeChannel ? ActiveLockIconAlpha : InactiveLockIconAlpha;
+                SetRendererColor(icon.GetComponent<Renderer>(), tint);
             }
         }
 
         public void SetOpen(bool open)
         {
             IsOpen = open;
-            if (!open)
+            if (radarHeaderToggle != null)
+            {
+                radarHeaderToggle.gameObject.SetActive(open);
+            }
+            if (radarBody != null)
+            {
+                radarBody.gameObject.SetActive(open);
+            }
+            if (open)
+            {
+                if (radarHeaderToggle != null)
+                {
+                    radarHeaderToggle.isOn = true;
+                }
+                SetCollapsed(false);
+                // Every open re-plays the slide-up reveal from nothing, rather than resuming
+                // wherever a previous session's animation left off.
+                dockProgress = 0f;
+                if (radarBody != null)
+                {
+                    radarBody.sizeDelta = new Vector2(PanelSize, 0f);
+                }
+            }
+            else
             {
                 orbiting = false;
                 leftDownInRect = false;
@@ -604,13 +753,139 @@ namespace BeyondSpiderAssembly
             }
             if (radarCamera != null)
             {
-                radarCamera.enabled = open;
+                radarCamera.enabled = open && !collapsed;
             }
+        }
+
+        // Bottom-right uGUI dock: a fixed header Toggle at the very corner, and a dark 420x420 Body
+        // panel extending upward from it (so collapsing always leaves just the header hugging the
+        // corner). IMGUI still draws all the live radar content — RenderTexture, bloom, ripples'
+        // reflection in the label, mouse handling — on top of/within whatever rect the Body currently
+        // occupies (see CurrentPanelRect/TryGetDockedRect below); this dock only owns position,
+        // collapse state, and background chrome.
+        private void BuildRadarDock()
+        {
+            Transform canvasRoot = BeyondSpiderUI.GetOrCreateRootCanvas();
+
+            Text headerText;
+            Toggle toggle = BeyondSpiderUI.CreateHeaderToggle(canvasRoot, "BS Radar Header", "▾ RADAR", out headerText);
+            RectTransform headerRect = toggle.GetComponent<RectTransform>();
+            headerRect.anchorMin = new Vector2(1f, 0f);
+            headerRect.anchorMax = new Vector2(1f, 0f);
+            headerRect.pivot = new Vector2(1f, 0f);
+            headerRect.anchoredPosition = new Vector2(-DockMargin, DockMargin);
+            headerRect.sizeDelta = new Vector2(DockHeaderWidth, DockHeaderHeight);
+            radarHeaderToggle = toggle;
+            radarHeaderText = headerText;
+
+            Image bodyImage = BeyondSpiderUI.CreatePanel(canvasRoot, "BS Radar Body", BeyondSpiderUI.PanelColor);
+            bodyImage.raycastTarget = false;
+            RectTransform bodyRect = bodyImage.rectTransform;
+            bodyRect.anchorMin = new Vector2(1f, 0f);
+            bodyRect.anchorMax = new Vector2(1f, 0f);
+            bodyRect.pivot = new Vector2(1f, 0f);
+            bodyRect.anchoredPosition = new Vector2(-DockMargin, DockMargin + DockHeaderHeight + DockGap);
+            // Height starts at 0, not PanelSize -- UpdateDockAnimation() grows it toward PanelSize
+            // each time the radar opens, the sidebar-style slide-up reveal. Width stays fixed; only
+            // height animates, since the bottom edge (pivot) is anchored just above the header and
+            // growth reads as "sliding up from behind the header."
+            bodyRect.sizeDelta = new Vector2(PanelSize, 0f);
+            radarBody = bodyRect;
+
+            toggle.onValueChanged.AddListener(OnHeaderToggleChanged);
+
+            // Both start hidden -- IsOpen defaults false (matches the old IMGUI code, which simply
+            // never drew anything until SetOpen(true), e.g. in build mode or before any captain has
+            // simulated). Unlike IMGUI draws, these are real always-present GameObjects, so their
+            // initial active state has to be set explicitly instead of just "not called this frame".
+            toggle.gameObject.SetActive(false);
+            bodyImage.gameObject.SetActive(false);
+        }
+
+        private void OnHeaderToggleChanged(bool expanded)
+        {
+            SetCollapsed(!expanded);
+            if (radarHeaderText != null)
+            {
+                radarHeaderText.text = (expanded ? "▾ " : "▸ ") + "RADAR";
+            }
+        }
+
+        private void SetCollapsed(bool value)
+        {
+            collapsed = value;
+            // radarBody's own active state is only ever toggled by SetOpen (whole radar on/off);
+            // while IsOpen it stays active permanently and UpdateDockAnimation's sizeDelta is what
+            // actually shows/hides it, sidebar-style, instead of an instant pop.
+            if (radarCamera != null)
+            {
+                radarCamera.enabled = IsOpen && !collapsed;
+            }
+            if (collapsed)
+            {
+                orbiting = false;
+                leftDownInRect = false;
+                SetRadarOwnsMouse(false);
+            }
+        }
+
+        // Eases radarBody's height toward PanelSize (expanded) or 0 (collapsed) every frame —
+        // unscaledDeltaTime so it keeps animating even if gameplay time is paused/slowed, matching
+        // BeyondSpiderInfoPanel's equivalent. DockSettled() gates IMGUI's actual content draw
+        // (RenderTexture/bloom/mouse handling) on the slide having finished, rather than drawing a
+        // squished mid-transition texture into a rect that's mid-slide.
+        private void UpdateDockAnimation()
+        {
+            if (radarBody == null)
+            {
+                return;
+            }
+            float target = collapsed ? 0f : 1f;
+            float step = Time.unscaledDeltaTime / DockAnimationSeconds;
+            dockProgress = Mathf.MoveTowards(dockProgress, target, step);
+            float eased = Mathf.SmoothStep(0f, 1f, dockProgress);
+            radarBody.sizeDelta = new Vector2(PanelSize, PanelSize * eased);
+        }
+
+        private bool DockSettled()
+        {
+            return !collapsed && dockProgress > 0.98f;
+        }
+
+        // ScreenSpaceOverlay canvases map RectTransform world corners 1:1 to screen pixels (Y
+        // increasing upward, origin bottom-left) — same reasoning FlippedMouse() below already
+        // relies on for Input.mousePosition. Converts to IMGUI's Rect convention (Y down from top).
+        private bool TryGetDockedRect(out Rect rect)
+        {
+            if (radarBody == null || !radarBody.gameObject.activeInHierarchy)
+            {
+                rect = default(Rect);
+                return false;
+            }
+
+            Vector3[] corners = new Vector3[4];
+            radarBody.GetWorldCorners(corners);
+            float xMin = corners[0].x;
+            float yMaxFromBottom = corners[2].y;
+            float width = corners[2].x - corners[0].x;
+            float height = corners[2].y - corners[0].y;
+            rect = new Rect(xMin, Screen.height - yMaxFromBottom, width, height);
+            return true;
+        }
+
+        private Rect CurrentPanelRect()
+        {
+            Rect rect;
+            if (TryGetDockedRect(out rect))
+            {
+                return rect;
+            }
+            return GetPanelRect();
         }
 
         private static Rect GetPanelRect()
         {
-            return new Rect(Screen.width - PanelSize - 20f, Screen.height - PanelSize - 20f, PanelSize, PanelSize);
+            return new Rect(Screen.width - PanelSize - DockMargin, Screen.height - PanelSize - DockMargin, PanelSize, PanelSize);
         }
 
         private static Vector2 FlippedMouse()
@@ -626,11 +901,18 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
-            Rect rect = GetPanelRect();
+            UpdateDockAnimation();
+            if (!DockSettled())
+            {
+                SetRadarOwnsMouse(false);
+                return;
+            }
+
+            Rect rect = CurrentPanelRect();
             SetRadarOwnsMouse(MouseIsOwnedByRadar(rect));
             HandleOrbitAndZoom(rect);
             UpdateGridScale();
-            UpdateSweep();
+            UpdateRipples();
             HandleClick(rect);
             SyncMarkers();
         }
@@ -790,11 +1072,42 @@ namespace BeyondSpiderAssembly
                 leftDownInRect = false;
                 if (wasDownInRect && overRect && Vector2.Distance(mouseDownPos, Input.mousePosition) < ClickPixelThreshold)
                 {
-                    TryLockAtMouse(rect);
+                    // Tab strip first: a click on a channel tab switches the active channel and
+                    // must not fall through into a lock attempt on whatever blip sits behind it.
+                    if (!TrySelectTabAtMouse(rect))
+                    {
+                        TryLockAtMouse(rect);
+                    }
                 }
             }
         }
 
+        private static Rect TabRect(Rect panelRect, int channel)
+        {
+            return new Rect(
+                panelRect.x + TabMargin + channel * (TabWidth + TabGap),
+                panelRect.y + TabMargin,
+                TabWidth,
+                TabHeight);
+        }
+
+        private bool TrySelectTabAtMouse(Rect rect)
+        {
+            Vector2 mouse = FlippedMouse();
+            for (int channel = 0; channel < FireChannels.Count; channel++)
+            {
+                if (TabRect(rect, channel).Contains(mouse))
+                {
+                    activeChannel = channel;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // (Un)locks the clicked blip on the ACTIVE channel. A manual lock on channel 0 pauses
+        // the captain's auto air-defence selection (Channel0ManualLock) until unlocked or the
+        // target dies; unlocking hands the channel back to auto.
         private void TryLockAtMouse(Rect rect)
         {
             ShipState ship = OwnShipState();
@@ -815,11 +1128,16 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
-            bool willLock = !ReferenceEquals(ship.LockedTarget, target);
-            ship.LockedTarget = willLock ? target : null;
+            int channel = activeChannel;
+            bool willLock = !ReferenceEquals(ship.ChannelTargets[channel], target);
+            ship.ChannelTargets[channel] = willLock ? target : null;
+            if (channel == 0)
+            {
+                ship.Channel0ManualLock = willLock;
+            }
 
             ILockable lockable = (ILockable)target;
-            ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(ship.Captain.PlayerID, target.PlayerID, lockable.GuidHash, willLock));
+            ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(ship.Captain.PlayerID, channel, target.PlayerID, lockable.GuidHash, willLock, true));
         }
 
         // A click point can land on more than one overlapping marker collider — e.g. a missile
@@ -862,17 +1180,69 @@ namespace BeyondSpiderAssembly
 
         private void OnGUI()
         {
-            if (!IsOpen || StatMaster.hudHidden || radarTexture == null)
+            // DockSettled(), not just !collapsed -- while the uGUI dock is mid-slide, radarBody's
+            // rect is a shorter-than-square work in progress; drawing the (square) RenderTexture into
+            // it would render squished. The uGUI panel itself still visibly slides every frame either
+            // way (Update() -> UpdateDockAnimation() runs regardless); only the IMGUI content (texture,
+            // bloom, mouse handling) waits for the slide to finish before it starts drawing.
+            if (!IsOpen || StatMaster.hudHidden || radarTexture == null || !DockSettled())
             {
                 return;
             }
 
-            Rect rect = GetPanelRect();
+            Rect rect = CurrentPanelRect();
             ConsumePanelMouseEvent(rect);
             DrawRadarTexture(rect);
             DrawPanelFrame(rect);
-            float ringMeters = ComputeRingStepMeters();
-            GUI.Label(new Rect(rect.x, rect.y - 20f, rect.width, 20f), "1 ring = " + ringMeters.ToString("0") + "m");
+            DrawChannelTabs(rect);
+            DrawRingScaleLabel(rect);
+        }
+
+        // Fire-channel tab strip along the panel's top-left edge. Pure IMGUI drawing — clicks
+        // are handled in Update()'s HandleClick via TrySelectTabAtMouse (ConsumePanelMouseEvent
+        // eats IMGUI mouse events over the panel before any GUI.Button could see them).
+        private void DrawChannelTabs(Rect rect)
+        {
+            if (tabLabelStyle == null)
+            {
+                tabLabelStyle = new GUIStyle(GUI.skin.label);
+                tabLabelStyle.alignment = TextAnchor.MiddleCenter;
+                tabLabelStyle.fontSize = 12;
+            }
+
+            Color previous = GUI.color;
+            for (int channel = 0; channel < FireChannels.Count; channel++)
+            {
+                Rect tab = TabRect(rect, channel);
+                Color color = FireChannels.Colors[channel];
+                bool active = channel == activeChannel;
+
+                GUI.color = new Color(color.r, color.g, color.b, active ? 0.85f : 0.25f);
+                GUI.DrawTexture(tab, framePixel);
+                if (active)
+                {
+                    GUI.color = Color.white;
+                    GUI.DrawTexture(new Rect(tab.x, tab.yMax, tab.width, 2f), framePixel);
+                }
+
+                GUI.color = active ? Color.white : new Color(1f, 1f, 1f, 0.75f);
+                GUI.Label(tab, channel.ToString(), tabLabelStyle);
+            }
+            GUI.color = previous;
+        }
+
+        // Scale readout moved inside the panel's bottom-left corner (was drawn above the rect
+        // before) — a small backed label using the same dark panel color as the uGUI dock.
+        private void DrawRingScaleLabel(Rect rect)
+        {
+            string text = "1 ring = " + ComputeRingStepMeters().ToString("0") + "m";
+            Rect backdrop = new Rect(rect.x + 8f, rect.yMax - 24f, 116f, 18f);
+            Color previous = GUI.color;
+            GUI.color = new Color(0.0235f, 0.0235f, 0.0549f, 0.75f);
+            GUI.DrawTexture(backdrop, framePixel);
+            GUI.color = Color.white;
+            GUI.Label(new Rect(backdrop.x + 6f, backdrop.y, backdrop.width - 8f, backdrop.height), text);
+            GUI.color = previous;
         }
 
         private void DrawRadarTexture(Rect rect)

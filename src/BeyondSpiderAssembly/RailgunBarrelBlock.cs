@@ -4,11 +4,13 @@ using UnityEngine;
 
 namespace BeyondSpiderAssembly
 {
-    public class RailgunBarrelBlock : SpaceBlock
+    public class RailgunBarrelBlock : SpaceBlock, IShipGun
     {
-        public MKey FireKey;
-        public MToggle FireControl;
-        public MText GunGroup;
+        // Auto-properties (not plain fields) so they satisfy IShipGun; assignment stays in
+        // SafeAwake via the private setters, external access is unchanged.
+        public MKey FireKey { get; private set; }
+        public MToggle FireControl { get; private set; }
+        public MText GunGroup { get; private set; }
         public MInfo CaliberInfo;
         public MInfo BoreLengthRatioInfo;
         public MInfo MuzzleVelocityInfo;
@@ -24,6 +26,9 @@ namespace BeyondSpiderAssembly
         private const float CaliberFromScaleCoefficient = 400f;
         private const float BoreLengthFromScaleCoefficient = 16000f;
         private const float MuzzleVelocityPerBoreLength = 65f;
+        // Fixed firing overhead added on top of the per-damage cost from SpaceBalance; the
+        // damage-scaled part is what dominates. See FireAt.
+        private const float EnergyPerShotBase = 40f;
 
         private float reloadTime;
         private float reload;
@@ -78,7 +83,7 @@ namespace BeyondSpiderAssembly
         public override void SimulateFixedUpdateAlways()
         {
             base.SimulateFixedUpdateAlways();
-            RecomputeBallistics();
+            //RecomputeBallistics(); // only recompute info in build
         }
 
         public override void OnSimulateStart()
@@ -91,7 +96,7 @@ namespace BeyondSpiderAssembly
             ShipState ship = OwnShip();
             if (ship != null)
             {
-                SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Guns);
+                SpaceCombatRegistry.RegisterSubsystem<IShipGun>(PlayerID, this, ship.Guns);
                 registered = true;
             }
         }
@@ -101,7 +106,7 @@ namespace BeyondSpiderAssembly
             ShipState ship = OwnShip();
             if (ship != null)
             {
-                SpaceCombatRegistry.RemoveSubsystem(this, ship.Guns);
+                SpaceCombatRegistry.RemoveSubsystem<IShipGun>(this, ship.Guns);
             }
             registered = false;
         }
@@ -121,7 +126,7 @@ namespace BeyondSpiderAssembly
                 ShipState ship = OwnShip();
                 if (ship != null)
                 {
-                    SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Guns);
+                    SpaceCombatRegistry.RegisterSubsystem<IShipGun>(PlayerID, this, ship.Guns);
                     registered = true;
                 }
             }
@@ -157,7 +162,13 @@ namespace BeyondSpiderAssembly
             }
 
             float massFactor = caliberMm / 300f;
-            float energyPerShot = 40f + massFactor * muzzleVelocity * muzzleVelocity * 0.00035f;
+            float mass = Mathf.Max(0.05f, massFactor);
+
+            // Price the shot on the Weapon bus by the potential muzzle damage it will deliver
+            // (energy-usage algorithm), so every barrel — however scaled — costs the same energy
+            // per point of damage. See SpaceBalance.
+            float potentialDamage = SpaceBalance.KineticDamage(caliberMm, mass, muzzleVelocity);
+            float energyPerShot = SpaceBalance.WeaponShotEnergy(EnergyPerShotBase, potentialDamage);
 
             ShipState ship = OwnShip();
             if (ship != null)
@@ -170,15 +181,16 @@ namespace BeyondSpiderAssembly
             }
 
             reload = 0f;
-            float baseDamage = caliberMm * 1.1f;
-            const float velocityDamageCoefficient = 0.0006f;
+            // Pure KE velocity term now — no caliber floor (ADR-0007). At the muzzle the round
+            // deals exactly the potentialDamage priced above, less once a shield or prior
+            // penetration has bled its relative speed.
+            float velocityDamageCoefficient = SpaceBalance.KineticDamagePerKE;
 
             Vector3 muzzlePosition = ApproximateMuzzlePosition();
             Vector3 velocity = direction.normalized * muzzleVelocity + (Body == null ? Vector3.zero : Body.velocity);
-            float mass = Mathf.Max(0.05f, massFactor);
             float lifetime = Mathf.Clamp(life + 2f, 2f, 12f);
             SpaceBallistics.SpawnKineticRound(
-                muzzlePosition, direction.normalized, velocity, caliberMm, baseDamage,
+                muzzlePosition, direction.normalized, velocity, caliberMm,
                 velocityDamageCoefficient, mass, lifetime, PlayerID, Team, muzzleVelocity);
 
             if (Body != null)
@@ -242,6 +254,7 @@ namespace BeyondSpiderAssembly
         public MText GunGroup;
         public MSlider AimTolerance;
         public MSlider TrackingSpeed;
+        public MFireChannel FireChannel;
 
         public int GuidHash { get; private set; }
 
@@ -256,12 +269,12 @@ namespace BeyondSpiderAssembly
 
         private readonly List<SpaceGunnerHinge> orientationHinges = new List<SpaceGunnerHinge>();
         private readonly List<SpaceGunnerHinge> pitchHinges = new List<SpaceGunnerHinge>();
-        private readonly List<RailgunBarrelBlock> boundGuns = new List<RailgunBarrelBlock>();
+        private readonly List<IShipGun> boundGuns = new List<IShipGun>();
         private readonly GameObject[] linkLines = new GameObject[LinkLineCount];
         private bool active;
         private bool fireEmulated;
         private float nextBindRefresh;
-        private RailgunBarrelBlock referenceGun;
+        private IShipGun referenceGun;
 
         // Empirical hinge direction calibration. Whether AngleToBe += x turns the gun in the
         // +x direction around a hinge's axis depends on how the hinge was placed/flipped, and
@@ -271,15 +284,16 @@ namespace BeyondSpiderAssembly
         // hinge's axis, and records a per-hinge sign that DriveHinges uses from then on. A
         // hinge that shows no measurable response (e.g. jammed against its limit) falls back
         // to the Flipped heuristic.
-        private enum HingeCalibrationPhase { NotStarted, SettlingOrientation, SettlingPitch, Done }
+        private enum HingeCalibrationPhase { NotStarted, SettlingOrientation, WaitingForOrientationRevert, SettlingPitch, Done }
 
         private const int CalibrationSettleTicks = 30;
+        private const int CalibrationRevertSettleTicks = 15;
         private const float CalibrationNudgeDegrees = 4f;
         private const float CalibrationMinResponseDegrees = 0.25f;
 
         private HingeCalibrationPhase calibrationPhase;
         private int calibrationTicks;
-        private RailgunBarrelBlock calibrationGun;
+        private IShipGun calibrationGun;
         private readonly Dictionary<SpaceGunnerHinge, float> hingeSigns = new Dictionary<SpaceGunnerHinge, float>();
         private readonly Dictionary<SpaceGunnerHinge, Vector3> calibrationBaselines = new Dictionary<SpaceGunnerHinge, Vector3>();
         private readonly Dictionary<SpaceGunnerHinge, float> calibrationApplied = new Dictionary<SpaceGunnerHinge, float>();
@@ -300,6 +314,7 @@ namespace BeyondSpiderAssembly
             GunGroup = AddText("Gun Group", "BSSpaceGunnerGroup", "g0");
             AimTolerance = AddSlider("Aim Tolerance", "BSSpaceGunnerTolerance", 12f, 1f, 45f);
             TrackingSpeed = AddSlider("Tracking Speed", "BSSpaceGunnerTracking", 90f, 5f, 360f);
+            FireChannel = AddFireChannel("Fire Channels", "BSSpaceGunnerFireChannel");
         }
 
         public override void OnSimulateStart()
@@ -455,10 +470,15 @@ namespace BeyondSpiderAssembly
 
         private bool TryGetSolution(ShipState ship, out FireSolution solution)
         {
-            solution = default(FireSolution);
-            if (ship.Captain != null && ship.Captain.TryGetLockedFireSolution(referenceGun.ApproximateMuzzlePosition(), referenceGun.CurrentMuzzleVelocity(), out solution))
+            // Multi-channel fire control (ADR-0010): channel 0 first, then the best
+            // angle/distance score among this gunner's other enabled channels. No arc check —
+            // the turret's real reach lives in its player-built hinge limits, which are opaque
+            // here; an unreachable target simply never aligns, so fire emulation stays off. The
+            // captain's IFF override is applied per candidate inside TrySelectSolution.
+            if (FireChannels.TrySelectSolution(ship, FireChannel.Value, referenceGun.ApproximateMuzzlePosition(),
+                    referenceGun.CurrentMuzzleVelocity(), referenceGun.transform.forward, float.MaxValue, null, out solution))
             {
-                return ship.Captain.CanCommandLockedFireAt(solution.Target);
+                return true;
             }
 
             if (ship.DefensiveSolution.Target == null)
@@ -470,7 +490,9 @@ namespace BeyondSpiderAssembly
             SensorTrack synthetic = new SensorTrack();
             synthetic.Position = solution.Target.Position;
             synthetic.Velocity = solution.Target.Velocity;
-            solution.AimPoint = SpaceBallistics.AimPoint(referenceGun.ApproximateMuzzlePosition(), synthetic, referenceGun.CurrentMuzzleVelocity());
+            // Lead in the ship's frame: every barrel inherits the ship's (core's) velocity — ADR 0006.
+            Vector3 shipVelocity = ship.Core != null ? ship.Core.Velocity : Vector3.zero;
+            solution.AimPoint = SpaceBallistics.AimPoint(referenceGun.ApproximateMuzzlePosition(), synthetic, referenceGun.CurrentMuzzleVelocity(), shipVelocity);
             return SpaceBallistics.IsHostile(this, solution.Target);
         }
 
@@ -510,7 +532,7 @@ namespace BeyondSpiderAssembly
             int lineIndex = 0;
             for (int i = 0; i < boundGuns.Count && lineIndex < LinkLineCount; i++)
             {
-                RailgunBarrelBlock gun = boundGuns[i];
+                IShipGun gun = boundGuns[i];
                 if (gun == null)
                 {
                     continue;
@@ -617,7 +639,7 @@ namespace BeyondSpiderAssembly
             {
                 for (int i = 0; i < ship.Guns.Count; i++)
                 {
-                    RailgunBarrelBlock gun = ship.Guns[i];
+                    IShipGun gun = ship.Guns[i];
                     if (gun != null && gun.GunGroup.Value == GunGroup.Value && MKeyMatch.SharesBinding(gun.FireKey, FireKey))
                     {
                         boundGuns.Add(gun);
@@ -639,7 +661,7 @@ namespace BeyondSpiderAssembly
             float bestDistance = float.MaxValue;
             for (int i = 0; i < boundGuns.Count; i++)
             {
-                RailgunBarrelBlock gun = boundGuns[i];
+                IShipGun gun = boundGuns[i];
                 if (gun == null || !gun.FireControl.IsActive)
                 {
                     continue;
@@ -740,6 +762,34 @@ namespace BeyondSpiderAssembly
                 return false;
             }
 
+            if (calibrationPhase == HingeCalibrationPhase.WaitingForOrientationRevert)
+            {
+                // Orientation's own AddAngle(-appliedValue) revert command was issued in
+                // FinishCalibrationNudge below, but the physical hinge takes time to catch up
+                // to it. Give that a few ticks to settle before nudging pitch, so the two
+                // moves don't visibly overlap (orientation still easing back to zero while
+                // pitch nudges out — looked like the turret was moving diagonally). The pitch
+                // measurement is taken in the pitch hinge's own rotating local frame, so a
+                // still-moving orientation hinge shouldn't actually corrupt the sign on a
+                // normal nested gimbal — this is just removing the overlap outright instead of
+                // relying on that.
+                calibrationTicks++;
+                if (calibrationTicks < CalibrationRevertSettleTicks)
+                {
+                    return false;
+                }
+
+                if (StartCalibrationNudge(pitchHinges))
+                {
+                    calibrationPhase = HingeCalibrationPhase.SettlingPitch;
+                    calibrationTicks = 0;
+                    return false;
+                }
+
+                calibrationPhase = HingeCalibrationPhase.Done;
+                return AllBoundHingesCalibrated();
+            }
+
             calibrationTicks++;
             if (calibrationTicks < CalibrationSettleTicks)
             {
@@ -747,9 +797,9 @@ namespace BeyondSpiderAssembly
             }
 
             FinishCalibrationNudge();
-            if (calibrationPhase == HingeCalibrationPhase.SettlingOrientation && StartCalibrationNudge(pitchHinges))
+            if (calibrationPhase == HingeCalibrationPhase.SettlingOrientation)
             {
-                calibrationPhase = HingeCalibrationPhase.SettlingPitch;
+                calibrationPhase = HingeCalibrationPhase.WaitingForOrientationRevert;
                 calibrationTicks = 0;
                 return false;
             }

@@ -5,11 +5,14 @@ namespace BeyondSpiderAssembly
 {
     public class ShieldProjectorBlock : SpaceBlock
     {
+        // The relative-speed gate (m/s): a round/missile is bled only while its speed RELATIVE to
+        // this shield generator exceeds this, and only down to this same (absolute) floor. See
+        // docs/adr/0006-relative-velocity-after-inheritance.md.
         private const float HyperVelocityThreshold = 600f;
+        // How hard the field bites per tick — only sets how many ticks it takes to bleed a round
+        // down to the threshold, not the total energy (that is priced by velocity-damage removed,
+        // see Decelerate). Big enough that most rounds reach the threshold within a tick or two.
         private const float DecelCoefficient = 80f;
-        // Scaled down to offset DecelCoefficient's cumulative 2000x increase (100x then 20x),
-        // keeping energy cost per unit of actual deltaV removed unchanged from the original.
-        private const float EnergyPerDeltaV = 0.00001f;
         private const float UpkeepBase = 6f;
         private const float UpkeepPerVolume = 0.02f;
         private const int RingCount = 10;
@@ -95,24 +98,31 @@ namespace BeyondSpiderAssembly
             lastUpkeepRatio = ship.Energy.Request(EnergyBus.Shield, upkeepCost * Time.fixedDeltaTime);
             float effectiveStrength = Strength.Value * lastUpkeepRatio;
             interceptedThisTick = false;
+            // Reference for the relative-speed gate below: the shield generator's own motion
+            // (≈ ship velocity). Gate on speed relative to this, but decelerate absolute speed toward
+            // the absolute HyperVelocityThreshold floor — see ADR 0006.
+            Vector3 shieldVelocity = Body != null ? Body.velocity : Vector3.zero;
 
             IList<ITrackable> targets = SpaceCombatRegistry.Trackables;
             for (int i = 0; i < targets.Count; i++)
             {
-                HeavyNuclearMissileBlock missile = targets[i] as HeavyNuclearMissileBlock;
+                MissileProjectile missile = targets[i] as MissileProjectile;
                 if (missile != null)
                 {
                     // Check current position (keeps decelerating every tick the missile is actually
                     // inside) and the next-tick predicted position (catches fast entries the same
                     // tick they'd otherwise cross the field), so slow-moving intercepts aren't missed
-                    // either way.
+                    // either way. The speed gate is the missile's speed RELATIVE to the shield
+                    // generator (ADR 0006): like a round it's bled only while closing faster than the
+                    // threshold, and only down to that same floor — the field no longer stops it dead.
                     Vector3 missilePredictedPos = missile.Position + missile.Velocity * Time.fixedDeltaTime;
-                    if (!missile.IsAlive || (!Contains(missile.Position) && !Contains(missilePredictedPos)))
+                    if (!missile.IsAlive || (missile.Velocity - shieldVelocity).magnitude <= HyperVelocityThreshold ||
+                        (!Contains(missile.Position) && !Contains(missilePredictedPos)))
                     {
                         continue;
                     }
 
-                    float missileDeltaV = Decelerate(ship, effectiveStrength, missile.Velocity, missile.ThreatMass);
+                    float missileDeltaV = Decelerate(ship, effectiveStrength, missile.Velocity, missile.ThreatMass, HyperVelocityThreshold);
                     if (missileDeltaV > 0f)
                     {
                         float missileSpeed = missile.Velocity.magnitude;
@@ -126,16 +136,17 @@ namespace BeyondSpiderAssembly
                 SpaceKineticRound round = targets[i] as SpaceKineticRound;
                 if (round != null)
                 {
-                    // Once deceleration brings a round's speed to/below HyperVelocityThreshold, it stops
-                    // being eligible here — the field caps a round down to the threshold, it doesn't fully stop it.
+                    // Eligible only while the round's speed RELATIVE to the shield generator exceeds
+                    // HyperVelocityThreshold (ADR 0006); the field caps that closing speed at the
+                    // threshold, it doesn't fully stop the round.
                     Vector3 roundPredictedPos = round.Position + round.Velocity * Time.fixedDeltaTime;
-                    if (!round.IsAlive || round.Velocity.magnitude <= HyperVelocityThreshold ||
+                    if (!round.IsAlive || (round.Velocity - shieldVelocity).magnitude <= HyperVelocityThreshold ||
                         (!Contains(round.Position) && !Contains(roundPredictedPos)))
                     {
                         continue;
                     }
 
-                    float roundDeltaV = Decelerate(ship, effectiveStrength, round.Velocity, round.MassEstimate);
+                    float roundDeltaV = Decelerate(ship, effectiveStrength, round.Velocity, round.MassEstimate, HyperVelocityThreshold);
                     if (roundDeltaV > 0f)
                     {
                         float roundSpeed = round.Velocity.magnitude;
@@ -162,23 +173,40 @@ namespace BeyondSpiderAssembly
             return r2 <= maxR2;
         }
 
-        private float Decelerate(ShipState ship, float effectiveStrength, Vector3 velocity, float mass)
+        // minSpeed is the ABSOLUTE speed this threat may be bled down to but not past in one tick —
+        // now the HyperVelocityThreshold for both kinetic rounds and missiles (ADR 0006). The field
+        // shaves the hyper-velocity off down to the threshold and lets the round/missile reach the
+        // hull for its reduced velocity-damage rather than deleting it, matching "slow/weaken, don't
+        // necessarily fully block". The eligibility gate (see the caller) is on RELATIVE speed while
+        // this floor is absolute, so a threat whose absolute speed is already below the floor is a
+        // no-op here even if its closing speed cleared the gate.
+        private float Decelerate(ShipState ship, float effectiveStrength, Vector3 velocity, float mass, float minSpeed)
         {
             mass = Mathf.Max(0.05f, mass);
             float speed = velocity.magnitude;
-            if (speed <= 0f)
+            float slowable = speed - minSpeed;
+            if (slowable <= 0f)
             {
                 return 0f;
             }
 
             float decelAccel = DecelCoefficient * effectiveStrength * speed;
-            float desiredDeltaV = Mathf.Min(speed, decelAccel * Time.fixedDeltaTime);
+            float desiredDeltaV = Mathf.Min(slowable, decelAccel * Time.fixedDeltaTime);
             if (desiredDeltaV <= 0f)
             {
                 return 0f;
             }
 
-            float energyCost = EnergyPerDeltaV * mass * speed * desiredDeltaV;
+            // Price the deceleration on the Shield bus by the velocity-damage it removes from the
+            // round, using the exact kinetic-damage coefficient the weapon paid to put there —
+            // see SpaceBalance. vAfter = speed - desiredDeltaV, so the bracket is the (v_before^2 -
+            // v_after^2) worth of potential damage the round no longer carries. This makes a
+            // hyper-velocity intercept a genuine capacitor-draining burst (block enough per second
+            // and the Shield bus can't keep up — the round leaks through), instead of the near-free
+            // deletion the old flat deltaV cost allowed.
+            float vAfter = speed - desiredDeltaV;
+            float damageRemoved = mass * (speed * speed - vAfter * vAfter) * SpaceBalance.KineticDamagePerKE;
+            float energyCost = SpaceBalance.ShieldEnergyPerDamage * damageRemoved;
             float ratio = ship.Energy.Request(EnergyBus.Shield, energyCost);
             return desiredDeltaV * ratio;
         }

@@ -1,0 +1,33 @@
+<Block>
+	<Debug>true</Debug>
+	<ID>14</ID>
+	<Name>Missile Launcher</Name>
+	<Mass>1.2</Mass>
+	<Script>BeyondSpiderAssembly.MissileLauncherBlock</Script>
+	<!-- Placeholder body mesh; the block script overwrites this "Vis" mesh at runtime with the
+	     Close-* model in build mode and the Open-* model once simulating, per the selected size.
+	     Mesh Rotation/Scale here are starting values to tune against the actual models. -->
+	<Mesh name="BS MissileLauncher Close M Mesh">
+		<Position x="0.0" y="0.0" z="0.0" />
+		<Rotation x="90" y="0" z="0" />
+		<Scale x="0.5" y="0.5" z="0.5" />
+	</Mesh>
+	<Texture name="BS MissileLauncher Close M Texture" />
+	<Icon>
+		<Position x="0.1" y="-0.1" z="-0.4" />
+		<Rotation x="45" y="225" z="0" />
+		<Scale x="0.4" y="0.4" z="0.4" />
+	</Icon>
+	<Colliders>
+		<BoxCollider>
+			<Position x="0.0" y="0.0" z="0.2" />
+			<Rotation x="0" y="0" z="0" />
+			<Scale x="0.6" y="0.6" z="0.5" />
+		</BoxCollider>
+	</Colliders>
+	<BasePoint hasAddingPoint="false">
+		<Stickiness enabled="true" radius="0.4" />
+		<Motion x="false" y="false" z="false" />
+	</BasePoint>
+	<AddingPoints />
+</Block>

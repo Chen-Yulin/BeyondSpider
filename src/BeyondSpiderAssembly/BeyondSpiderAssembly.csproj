@@ -52,28 +52,39 @@
     <Reference Include="UnityEngine">
       <HintPath>$(BESIEGE_UNITY_ASSEMBLIES)UnityEngine.dll</HintPath>
     </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(BESIEGE_UNITY_ASSEMBLIES)UnityEngine.UI.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Mod.cs" />
+    <Compile Include="MacroBalance.cs" />
+    <Compile Include="SpaceBalance.cs" />
+    <Compile Include="IKineticTarget.cs" />
     <Compile Include="SpaceCombatCore.cs" />
     <Compile Include="SpaceBlock.cs" />
     <Compile Include="MInfo.cs" />
+    <Compile Include="FireChannels.cs" />
+    <Compile Include="MFireChannel.cs" />
     <Compile Include="SpaceShipCore.cs" />
     <Compile Include="SpaceCaptainBlock.cs" />
     <Compile Include="SuperCapacitorBlock.cs" />
     <Compile Include="RadarPanelBlock.cs" />
     <Compile Include="DefenseDirectorBlock.cs" />
     <Compile Include="ShieldProjectorBlock.cs" />
-    <Compile Include="CiwsBlock.cs" />
-    <Compile Include="HeavyNuclearMissileBlock.cs" />
+    <Compile Include="MissileGuidance.cs" />
+    <Compile Include="MissileLauncherBlock.cs" />
     <Compile Include="SpaceBallistics.cs" />
     <Compile Include="SpaceFlakTurretBlock.cs" />
     <Compile Include="RailgunBarrelBlock.cs" />
+    <Compile Include="LaserFx.cs" />
+    <Compile Include="LaserLanceBlock.cs" />
     <Compile Include="SpaceGunnerSupport.cs" />
     <Compile Include="NanoArmorBlock.cs" />
     <Compile Include="DamageRouter.cs" />
-    <Compile Include="SpaceInterceptorLauncherBlock.cs" />
     <Compile Include="CaptainRadarView.cs" />
+    <Compile Include="BeyondSpiderUI.cs" />
+    <Compile Include="BeyondSpiderInfoPanel.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

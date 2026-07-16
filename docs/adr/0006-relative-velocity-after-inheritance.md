@@ -1,0 +1,14 @@
+# Relative velocity everywhere, after projectiles inherit launcher velocity
+
+Weapons now fire with **velocity inheritance** — a round/missile's initial world velocity is `barrel_direction × muzzle_velocity + firing_block.rigidbody.velocity`. That made every system which had treated velocities as world-absolute subtly wrong, so we adopt relative-velocity semantics across space combat. The ship's single linear-velocity reference is the **ship core** (`SpaceShipCore.Velocity`): it's the rigidbody `RadarPanelBlock` already uses for time-to-impact, and it's always present when a `ShipState` exists, unlike the optional captain. Fire-control lead (`SpaceBallistics` + `SpaceCaptainBlock`) now solves in the ship frame — it uses the target's velocity **relative to the core** and extrapolates the aim point by that same relative velocity, so a barrel that itself carries the ship's velocity ends up pointing along the true intercept. The electromagnetic shield gates interception on a projectile's speed **relative to the shield generator** exceeding the 600 m/s hyper-velocity threshold, but still bleeds the projectile's **absolute** speed toward an absolute 600 floor (a deliberate *gate-relative / decelerate-absolute* hybrid), and missiles now share that 600 floor instead of being stopped dead. Point-defense damage penalties (CIWS, flak) and kinetic-round impact damage are likewise measured relative to the ship / the struck target instead of in absolute world speed.
+
+**Status**: accepted
+
+**Considered Options**
+
+- *Full relative-frame shield deceleration* (bleed relative speed to the threshold, hand velocity back as `shieldVel + relDir × cappedSpeed`) — rejected for the gate-relative / decelerate-absolute hybrid, which is a smaller change, keeps the existing absolute-KE energy pricing, and barely differs in practice because ship speeds are small next to hyper-velocity rounds.
+- *Captain velocity as the ship reference* (the literal first request) — rejected because the captain block is optional and point defense must still lead without one; the core and captain ride the same machine, so their velocities are equivalent anyway.
+
+**Consequences**
+
+The shield no longer halts missiles — it shaves them to the 600 absolute floor and applies the damage-per-ΔV burst on the way down, then they coast through. A round whose absolute speed is already below 600 but whose closing speed to the shield exceeds 600 (own ship charging head-on into a slow round) is gated "eligible" yet the absolute-floor deceleration is a no-op — accepted as a rare corner. Any new velocity-sensitive interaction should pick its reference frame explicitly — ship core for own-ship fire control and point defense, the struck target for impact damage, the shield generator for shield gating — rather than reaching for world-absolute speed.

@@ -10,10 +10,10 @@ namespace BeyondSpiderAssembly
         public MSlider WeaponPowerShare;
 
         private const float MinScaleComponent = 0.05f;
-        // Total reactor output used to be a player-set MSlider; now it's computed directly from
-        // the ship core block's own build-mode volume, same idea as RailgunBarrelBlock's
-        // caliber/bore length/muzzle velocity — see agent-besiege-mod-guide.md.
-        private const float PowerPerVolume = 1200f;
+        // Total reactor output used to be a player-set MSlider; now it's computed directly from the
+        // ship core block's own build-mode volume, same idea as RailgunBarrelBlock's caliber/bore
+        // length/muzzle velocity — see agent-besiege-mod-guide.md. The per-volume coefficient lives
+        // in SpaceBalance.ReactorPowerPerVolume so the 能量充沛度 macro dial scales it (MacroBalance).
 
         private float totalPower;
 
@@ -44,7 +44,7 @@ namespace BeyondSpiderAssembly
             float x = Mathf.Max(MinScaleComponent, Mathf.Abs(scale.x));
             float y = Mathf.Max(MinScaleComponent, Mathf.Abs(scale.y));
             float z = Mathf.Max(MinScaleComponent, Mathf.Abs(scale.z));
-            totalPower = PowerPerVolume * x * y * z;
+            totalPower = SpaceBalance.ReactorPowerPerVolume * x * y * z;
             TotalPowerInfo.Set(totalPower.ToString("F0") + " MW");
         }
 

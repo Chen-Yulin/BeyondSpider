@@ -94,11 +94,10 @@ First playable space-combat slice: ship core, energy grid, capacitors, radar tra
 		<Block path="RadarPanel.xml" />
 		<Block path="DefenseDirector.xml" />
 		<Block path="ShieldProjector.xml" />
-		<Block path="CiwsBlock.xml" />
-		<Block path="HeavyNuclearMissile.xml" />
 		<Block path="SpaceFlakTurret.xml" />
 		<Block path="Railgun.xml" />
-		<Block path="SpaceInterceptorLauncher.xml" />
+		<Block path="LaserLance.xml" />
+		<Block path="MissileLauncher.xml" />
 		<Block path="SpaceGunner.xml" />
 	</Blocks>
 	
@@ -143,10 +142,46 @@ First playable space-combat slice: ship core, energy grid, capacitors, radar tra
 		<Texture name="BS Radar Texture" path="Radar\radar.png"/>
 		<Mesh name="BS ShieldProjector Mesh" path="ShieldProjector\frustum.obj"/>
 		<Texture name="BS ShieldProjector Texture" path="ShieldProjector\AALock.png"/>
-		<Mesh name="BS CIWS Mesh" path="CIWS\sample.obj"/>
-		<Texture name="BS CIWS Texture" path="CIWS\sample.png"/>
 		<Mesh name="BS HeavyMissile Mesh" path="HeavyMissile\Aim-54.obj"/>
 		<Texture name="BS HeavyMissile Texture" path="HeavyMissile\Aim-54.png"/>
+		<!-- Unified missile launcher (ADR-0009): three sizes S/M/L, each with an open (pits
+		     exposed) and closed (lid) launcher body plus its own missile round mesh. -->
+		<Mesh name="BS MissileLauncher Open S Mesh" path="MissileLauncher\Small\Open-S.obj"/>
+		<Texture name="BS MissileLauncher Open S Texture" path="MissileLauncher\Small\Open-S.png"/>
+		<Mesh name="BS MissileLauncher Close S Mesh" path="MissileLauncher\Small\Close-S.obj"/>
+		<Texture name="BS MissileLauncher Close S Texture" path="MissileLauncher\Small\Close-S.png"/>
+		<Mesh name="BS Missile Round S Mesh" path="MissileLauncher\Small\Missile-S.obj"/>
+		<Texture name="BS Missile Round S Texture" path="MissileLauncher\Small\Missile-S.png"/>
+		<Mesh name="BS MissileLauncher Open M Mesh" path="MissileLauncher\Medium\Open-M.obj"/>
+		<Texture name="BS MissileLauncher Open M Texture" path="MissileLauncher\Medium\Open-M.png"/>
+		<Mesh name="BS MissileLauncher Close M Mesh" path="MissileLauncher\Medium\Close-M.obj"/>
+		<Texture name="BS MissileLauncher Close M Texture" path="MissileLauncher\Medium\Close-M.png"/>
+		<Mesh name="BS Missile Round M Mesh" path="MissileLauncher\Medium\Missile-M.obj"/>
+		<Texture name="BS Missile Round M Texture" path="MissileLauncher\Medium\Missile-M.png"/>
+		<Mesh name="BS MissileLauncher Open L Mesh" path="MissileLauncher\Large\Open-L.obj"/>
+		<Texture name="BS MissileLauncher Open L Texture" path="MissileLauncher\Large\Open-L.png"/>
+		<Mesh name="BS MissileLauncher Close L Mesh" path="MissileLauncher\Large\Close-L.obj"/>
+		<Texture name="BS MissileLauncher Close L Texture" path="MissileLauncher\Large\Close-L.png"/>
+		<Mesh name="BS Missile Round L Mesh" path="MissileLauncher\Large\Missile-L.obj"/>
+		<Texture name="BS Missile Round L Texture" path="MissileLauncher\Large\Missile-L.png"/>
+		<Mesh name="BS FlakTurret Single Mount Mesh" path="FlakTurret\单管火炮\PaoZuo.obj"/>
+		<Texture name="BS FlakTurret Single Mount Texture" path="FlakTurret\单管火炮\PaoZuo.png"/>
+		<Mesh name="BS FlakTurret Single Turret Mesh" path="FlakTurret\单管火炮\PaoTa.obj"/>
+		<Texture name="BS FlakTurret Single Turret Texture" path="FlakTurret\单管火炮\PaoTa.png"/>
+		<Mesh name="BS FlakTurret Single Gun Mesh" path="FlakTurret\单管火炮\PaoGuan.obj"/>
+		<Texture name="BS FlakTurret Single Gun Texture" path="FlakTurret\单管火炮\PaoGuan.png"/>
+		<Mesh name="BS FlakTurret Multi Mount Mesh" path="FlakTurret\多管火炮\PaoZuo.obj"/>
+		<Texture name="BS FlakTurret Multi Mount Texture" path="FlakTurret\多管火炮\PaoZuo.png"/>
+		<Mesh name="BS FlakTurret Multi Turret Mesh" path="FlakTurret\多管火炮\PaoTa.obj"/>
+		<Texture name="BS FlakTurret Multi Turret Texture" path="FlakTurret\多管火炮\PaoTa.png"/>
+		<Mesh name="BS FlakTurret Multi Gun Mesh" path="FlakTurret\多管火炮\PaoGuan.obj"/>
+		<Texture name="BS FlakTurret Multi Gun Texture" path="FlakTurret\多管火炮\PaoGuan.png"/>
+		<Mesh name="BS FlakTurret Ciws Mount Mesh" path="FlakTurret\近防炮\PaoZuo.obj"/>
+		<Texture name="BS FlakTurret Ciws Mount Texture" path="FlakTurret\近防炮\PaoZuo.png"/>
+		<Mesh name="BS FlakTurret Ciws Turret Mesh" path="FlakTurret\近防炮\PaoTa.obj"/>
+		<Texture name="BS FlakTurret Ciws Turret Texture" path="FlakTurret\近防炮\PaoTa.png"/>
+		<Mesh name="BS FlakTurret Ciws Gun Mesh" path="FlakTurret\近防炮\PaoGuan.obj"/>
+		<Texture name="BS FlakTurret Ciws Gun Texture" path="FlakTurret\近防炮\PaoGuan.png"/>
 		<Mesh name="BS Migrated AA Sample Mesh" path="WW2Migrated\AA\sample.obj"/>
 		<Texture name="BS Migrated AA Sample Texture" path="WW2Migrated\AA\sample.png"/>
 		<Mesh name="BS Migrated AA 20 Base Mesh" path="WW2Migrated\AA\20\20 1.obj"/>

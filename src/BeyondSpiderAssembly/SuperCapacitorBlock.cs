@@ -49,7 +49,7 @@ namespace BeyondSpiderAssembly
         public override void SimulateFixedUpdateAlways()
         {
             base.SimulateFixedUpdateAlways();
-            RecomputeCapacity();
+            // RecomputeCapacity();
         }
 
         public override void OnSimulateStart()

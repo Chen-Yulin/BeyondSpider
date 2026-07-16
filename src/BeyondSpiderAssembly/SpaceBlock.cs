@@ -28,5 +28,13 @@ namespace BeyondSpiderAssembly
         {
             return (MInfo)AddCustom(new MInfo(displayName, key, initialValue));
         }
+
+        // Same bare-call idiom for the fire-channel mask mapper (see MFireChannel.cs). Default
+        // is all four channels enabled, so a freshly placed weapon responds to any lock the
+        // ship holds — the multi-channel equivalent of the old single-lock behavior.
+        public MFireChannel AddFireChannel(string displayName, string key, int defaultMask = FireChannels.AllMask)
+        {
+            return (MFireChannel)AddCustom(new MFireChannel(displayName, key, defaultMask));
+        }
     }
 }
