@@ -63,7 +63,7 @@ namespace BeyondSpiderAssembly
         private Image armorIntegrityBar;
         private Image armorStructuralBar;
         private Toggle showArmorHpToggle;
-        private Text defenseTargetText;
+        private Text channel0TargetText;
 
         private void Start()
         {
@@ -156,7 +156,7 @@ namespace BeyondSpiderAssembly
             showArmorHpToggle.isOn = SpaceCombatRuntime.ShowArmorHP;
             showArmorHpToggle.onValueChanged.AddListener(OnShowArmorHpChanged);
 
-            defenseTargetText = AddTextRow("DefenseTarget", "Defense target: none");
+            channel0TargetText = AddTextRow("Channel0Target", "Channel 0 target: none");
 
             // Measure Rows' natural (all rows visible) height once via its own ContentSizeFitter, then
             // drive the panel's clip height from that -- Rows itself is never resized after this.
@@ -482,9 +482,12 @@ namespace BeyondSpiderAssembly
                 showArmorHpToggle.isOn = SpaceCombatRuntime.ShowArmorHP;
             }
 
-            defenseTargetText.text = ship.DefensiveSolution.Target != null
-                ? "Defense target: " + ship.DefensiveSolution.Target.Kind + "  TTI " + ship.DefensiveSolution.TimeToImpact.ToString("0.0") + "s"
-                : "Defense target: none";
+            // Channel 0 is the sole air-defence/point-defense target source now (ADR-0012 retired
+            // the separate DefenseDirectorBlock/DefensiveSolution field this used to read).
+            ITrackable channel0 = ship.ChannelTargets[0];
+            channel0TargetText.text = channel0 != null
+                ? "Channel 0 target: " + channel0.Kind
+                : "Channel 0 target: none";
         }
     }
 }

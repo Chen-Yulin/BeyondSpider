@@ -58,7 +58,7 @@ namespace BeyondSpiderAssembly
             return block != null && target != null && target.PlayerID != block.PlayerID && target.Team != block.Team;
         }
 
-        private const float ProjectileVisualScale = 3f;
+        private const float ProjectileVisualScale = 0.5f;
 
         // Single spawn path for every physical cannon shell (railgun slugs and single-block
         // flak-turret large rounds alike) — same mesh, same raycast penetration, same railgun-style
@@ -190,9 +190,15 @@ namespace BeyondSpiderAssembly
         }
 
         // visualScale must be the same ProjectileVisualScale multiplier SpawnKineticRound
-        // applies to the shell mesh — the glow's anchor and the CannonLight flare are
-        // positioned/sized off the same caliber terms as the mesh, so if this ever drifts
-        // out of sync with the mesh's own scale the flare stops lining up with the shell.
+        // applies to the shell mesh — the CannonLight flare is sized off the same caliber
+        // terms as the mesh, so if this ever drifts out of sync with the mesh's own scale
+        // the flare stops lining up with the shell.
+        //
+        // The shell mesh's own local origin IS its tail center (CannonVis sits at round's
+        // local zero with no offset), so the glow anchors at round's local zero too — no
+        // backward Z offset. An earlier version pushed it back by caliber/220*visualScale
+        // on the assumption the origin was the mesh's center, which shot the glow out past
+        // the actual tail (worse the larger the caliber).
         public static void AttachRailgunTailGlow(Transform round, Rigidbody body, float caliber, float maxSpeed, float visualScale)
         {
             if (round == null || body == null)
@@ -202,7 +208,7 @@ namespace BeyondSpiderAssembly
 
             GameObject glow = new GameObject("Railgun Velocity Tail Glow");
             glow.transform.SetParent(round);
-            glow.transform.localPosition = new Vector3(0f, 0f, -Mathf.Max(0.15f, caliber / 220f * visualScale));
+            glow.transform.localPosition = Vector3.zero;
             glow.transform.localRotation = Quaternion.identity;
             glow.transform.localScale = Vector3.one;
 
@@ -213,7 +219,7 @@ namespace BeyondSpiderAssembly
                 cannonLight.transform.SetParent(glow.transform);
                 cannonLight.transform.localPosition = Vector3.zero;
                 cannonLight.transform.localRotation = Quaternion.identity;
-                cannonLight.transform.localScale = Vector3.one * Mathf.Clamp(caliber / 120f * visualScale, 0.6f, 3.5f);
+                cannonLight.transform.localScale = Vector3.one * Mathf.Clamp(caliber / 120f * visualScale, 0.6f, 10f);
             }
 
             RailgunTailGlow tailGlow = glow.AddComponent<RailgunTailGlow>();
@@ -866,7 +872,9 @@ namespace BeyondSpiderAssembly
         public Vector3 Position { get { return transform.position; } }
         public Vector3 Velocity { get { return body == null ? Vector3.zero : body.velocity; } }
         public float Radius { get { return RadiusValue; } }
-        public bool IsAlive { get { return gameObject.activeSelf && Time.time - spawnTime < Lifetime; } }
+        // `this != null` is the destroyed-object test (see ITrackable.IsAlive), not dead weight: a
+        // round is destroyed the moment it hits, while cached track/lock references still point at it.
+        public bool IsAlive { get { return this != null && gameObject.activeSelf && Time.time - spawnTime < Lifetime; } }
 
         private void Awake()
         {
@@ -955,6 +963,26 @@ namespace BeyondSpiderAssembly
             return a.distance.CompareTo(b.distance);
         }
 
+        // Physical push in the round's own travel direction, applied at the exact impact point —
+        // scoped to armour specifically (not e.g. an intercepted missile) to match the design ask.
+        // MissileProjectile.Detonate applies the identical push for a missile's own direct hits.
+        private void ApplyImpactKnockback(IKineticTarget target, RaycastHit hit)
+        {
+            NanoArmorBehaviour armor = target as NanoArmorBehaviour;
+            Rigidbody targetBody = hit.rigidbody;
+            if (armor == null || targetBody == null)
+            {
+                return;
+            }
+            float speed = body.velocity.magnitude;
+            if (speed < 0.01f)
+            {
+                return;
+            }
+            Vector3 impulse = (body.velocity / speed) * (MassEstimate * speed * SpaceBalance.KineticImpactImpulseFraction);
+            targetBody.AddForceAtPosition(impulse, hit.point, ForceMode.Impulse);
+        }
+
         // Resolve the round against one penetrable target. Damage dealt equals kinetic energy lost,
         // in the target's rest frame: budget D = mass * |v_rel|^2 * coeff (ADR-0007).
         private HitOutcome ResolveTarget(IKineticTarget target, RaycastHit hit)
@@ -965,6 +993,11 @@ namespace BeyondSpiderAssembly
             float coeff = VelocityDamageCoefficient;
             float budget = MassEstimate * relSpeedSq * coeff; // D
             float hp = target.RemainingKineticHP;             // H
+
+            // Called only for targets that are still standing (callers filter IsBreached before this),
+            // so every resolved hit — breach, ricochet, or embed alike — also physically shoves the
+            // armour it struck (ADR: kinetic impact knockback in SpaceBalance).
+            ApplyImpactKnockback(target, hit);
 
             if (hp > 0f && budget >= hp)
             {

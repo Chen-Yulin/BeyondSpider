@@ -71,6 +71,7 @@ namespace BeyondSpiderAssembly
         public MKey Launch;
         public MToggle AutoFire;
         public MFireChannel FireChannel;
+        public MSlider ArmDelay;
         public MInfo PitInfo;
         public MInfo ReloadInfo;
         public MInfo RangeInfo;
@@ -110,6 +111,11 @@ namespace BeyondSpiderAssembly
         // since ShipState may not exist yet when OnSimulateStart runs.
         private bool registered;
 
+        // This launcher's personal channel-0 lottery ticket (ADR-0014): which of the ship's
+        // up-to-4 channel-0 threats its auto-fire engages, sticky until that target drops off
+        // the list. Each fired missile draws its own ticket for in-flight re-acquisition.
+        private readonly FireChannelAssignment channel0Assignment = new FireChannelAssignment();
+
         private GameObject pitContainer;
         private GameObject[] pitObjects;
 
@@ -121,6 +127,11 @@ namespace BeyondSpiderAssembly
             Launch = AddKey("Launch", "BSMissileLaunch", KeyCode.X);
             AutoFire = AddToggle("Auto Fire", "BSMissileAutoFire", true);
             FireChannel = AddFireChannel("Fire Channels", "BSMissileFireChannel");
+            // Contact fuze arming delay: how long after launch the missile ignores anything it touches
+            // (so it can clear its own launcher/hull before it's live to detonate — see
+            // MissileProjectile.OnTriggerEnter). Was a hardcoded 0.18s; exposed as a slider so ships
+            // with a short muzzle clearance or unusual mounting can retune it without a recompile.
+            ArmDelay = AddSlider("Arm Delay", "BSMissileArmDelay", 0.18f, 0f, 2f);
             PitInfo = AddInfo("Cells", "BSMissilePitInfo");
             ReloadInfo = AddInfo("Reload", "BSMissileReloadInfo");
             RangeInfo = AddInfo("Range", "BSMissileRangeInfo");
@@ -200,6 +211,7 @@ namespace BeyondSpiderAssembly
             reloadTimer = 0f;
             salvoCooldown = 0f;
             manualLaunchQueued = false;
+            channel0Assignment.Clear();
             doorOpen = false;
             doorHoldTimer = 0f;
             launchPending = false;
@@ -342,7 +354,7 @@ namespace BeyondSpiderAssembly
             // would let auto-fire ignore channel assignment entirely. A missile already in
             // flight still falls back to nearest-hostile when its channels go empty.
             ITrackable target = MissileFireControl.SelectTarget(ship, PlayerID, Team, transform.position,
-                transform.forward, MissileLauncherAssets.MissileRange[t], FireChannel.Value, null, false);
+                transform.forward, MissileLauncherAssets.MissileRange[t], FireChannel.Value, channel0Assignment, null, false);
             // Auto-fire needs a fire-control target; a manual press launches even without one (it flies
             // straight out and tries to acquire in flight).
             if (!(manual || (AutoFire.IsActive && target != null)))
@@ -375,7 +387,7 @@ namespace BeyondSpiderAssembly
                 return;
             }
             ITrackable target = MissileFireControl.SelectTarget(ship, PlayerID, Team, transform.position,
-                transform.forward, MissileLauncherAssets.MissileRange[type], FireChannel.Value, null, false);
+                transform.forward, MissileLauncherAssets.MissileRange[type], FireChannel.Value, channel0Assignment, null, false);
             if (!manual && target == null)
             {
                 return; // auto-fire lost its target during the open lead — don't spend a cell
@@ -463,15 +475,20 @@ namespace BeyondSpiderAssembly
             rb.useGravity = false;
             rb.velocity = velocity;
 
-            // Collision box (trigger so it never physics-pushes ships, but raycasting rounds still hit
-            // it — Physics.queriesHitTriggers is true by default — so it stays shoot-downable, and it
-            // detonates on contact via OnTriggerEnter).
-            BoxCollider box = go.AddComponent<BoxCollider>();
-            box.isTrigger = true;
-            box.size = MissileLauncherAssets.ColliderSize[type];
+            // Collision capsule (trigger so it never physics-pushes ships, but raycasting rounds still
+            // hit it — Physics.queriesHitTriggers is true by default — so it stays shoot-downable, and
+            // it detonates on contact via OnTriggerEnter). Sized and offset from the round mesh's own
+            // measured bounds (see MissileLauncherAssets.ColliderRadius/Height/Center) instead of a
+            // hand-tuned box, so the hit volume hugs the actual slender body and tracks any mesh change.
+            CapsuleCollider capsule = go.AddComponent<CapsuleCollider>();
+            capsule.isTrigger = true;
+            capsule.direction = 2; // local Z — the missile's travel axis
+            capsule.radius = MissileLauncherAssets.ColliderRadius(type);
+            capsule.height = MissileLauncherAssets.ColliderHeight(type);
+            capsule.center = MissileLauncherAssets.ColliderCenter(type);
 
             MissileProjectile missile = go.AddComponent<MissileProjectile>();
-            missile.Configure(PlayerID, Team, type, target, netId, channelMask, OwnShip());
+            missile.Configure(PlayerID, Team, type, target, netId, channelMask, OwnShip(), ArmDelay.Value);
         }
 
         // Monotonic per-session source of shared missile ids. Minted only on the host (ExecuteFire is
@@ -566,10 +583,10 @@ namespace BeyondSpiderAssembly
         }
     }
 
-    // Chooses which target a launcher (or an in-flight missile) should guide toward, realising the
-    // spec's "which target is decided by fire control": defensive threats first (incoming missiles the
-    // ship's defence director flagged), then the requested fire channels (channel 0 outranking the
-    // rest — ADR-0010), then — for in-flight missiles only — the nearest hostile in range as a
+    // Chooses which target a launcher (or an in-flight missile) should guide toward: the requested
+    // fire channels (channel 0 — the captain's auto air-defence lock, ADR-0012 retired the separate
+    // DefenseDirectorBlock/DefensiveSolution shortcut that used to be checked first here — outranks
+    // the rest, ADR-0010), then — for in-flight missiles only — the nearest hostile in range as a
     // fallback. Always range- and IFF-gated.
     public static class MissileFireControl
     {
@@ -585,21 +602,22 @@ namespace BeyondSpiderAssembly
         // nearest hostile when its channels go empty (it's already spent), but a launcher deciding
         // whether to auto-fire must stay channel-driven, otherwise the channel mapper would be
         // meaningless for launchers.
+        // `channel0Assignment` is the caller's personal channel-0 lottery ticket (ADR-0014) — the
+        // launcher owns one for its auto-fire decisions, and each in-flight missile owns its own
+        // for re-acquisition, so a salvo spreads over the threat list instead of every missile
+        // converging on rank 0.
         public static ITrackable SelectTarget(ShipState ship, int playerId, MPTeam team, Vector3 origin,
-            Vector3 forward, float range, int channelMask, ITrackable self, bool allowNearestFallback)
+            Vector3 forward, float range, int channelMask, FireChannelAssignment channel0Assignment,
+            ITrackable self, bool allowNearestFallback)
         {
             if (ship != null)
             {
-                ITrackable defensive = ship.DefensiveSolution.Target;
-                if (!ReferenceEquals(defensive, self) && IsViable(defensive, playerId, team, origin, range))
-                {
-                    return defensive;
-                }
                 // Channel targets are engageable through the captain's IFF override, exactly like the
                 // flak turret's channel path (CanEngage handles it inside FireChannels.SelectTarget) —
                 // so an interceptor can be commanded onto a locked friendly/own-team target (e.g.
-                // test-firing at your own missile with IFF off) that the blanket hostility gate refuses.
-                ITrackable channelTarget = FireChannels.SelectTarget(ship, channelMask, origin, forward, range, playerId, team, self);
+                // test-firing at your own missile, or a threat from one of this player's OTHER ships,
+                // with IFF off) that the blanket hostility gate refuses.
+                ITrackable channelTarget = FireChannels.SelectTarget(ship, channelMask, channel0Assignment, origin, forward, range, playerId, team, self);
                 if (channelTarget != null)
                 {
                     return channelTarget;
@@ -654,12 +672,6 @@ namespace BeyondSpiderAssembly
             return FireChannels.IsChannelTarget(ship, target)
                 && ship.Captain != null && ship.Captain.CanCommandLockedFireAt(target);
         }
-
-        private static bool IsViable(ITrackable target, int playerId, MPTeam team, Vector3 origin, float range)
-        {
-            return target != null && target.IsAlive && IsHostile(target, playerId, team)
-                && Vector3.Distance(origin, target.Position) <= range;
-        }
     }
 
     // The flying missile: a projectile (not a block) with a collision box. Guides by the shared PN +
@@ -688,12 +700,17 @@ namespace BeyondSpiderAssembly
         // Fire channels this missile listens to when (re-)acquiring, copied from its launcher's
         // MFireChannel mask at spawn (ADR-0010).
         private int channelMask = FireChannels.AllMask;
+        // This missile's own channel-0 lottery ticket (ADR-0014) for in-flight re-acquisition —
+        // per-missile, so a salvo spreads over the threat list instead of converging on rank 0.
+        private readonly FireChannelAssignment channel0Assignment = new FireChannelAssignment();
 
-        private const float ArmSeconds = 0.18f;
+        // Player-tunable via the launcher's Arm Delay slider (MissileLauncherBlock.ArmDelay); 0.18f is
+        // just the fallback if Configure is somehow never called. Set once per missile at spawn, not
+        // read live off the block, since the block that fired it may not even exist a moment later.
+        private float armSeconds = 0.18f;
         private const float RetargetInterval = 0.4f;
-        private const float MissileDamagePerDeltaV = 0.4f;
 
-        public void Configure(int playerId, MPTeam team, int missileType, ITrackable initialTarget, int netId, int fireChannelMask, ShipState launchingShip)
+        public void Configure(int playerId, MPTeam team, int missileType, ITrackable initialTarget, int netId, int fireChannelMask, ShipState launchingShip, float armDelaySeconds)
         {
             ownerPlayerID = playerId;
             ownerTeam = team;
@@ -702,6 +719,7 @@ namespace BeyondSpiderAssembly
             target = initialTarget;
             guidHash = netId;
             channelMask = fireChannelMask & FireChannels.AllMask;
+            armSeconds = Mathf.Max(0f, armDelaySeconds);
             structuralHP = MissileLauncherAssets.MissileStructuralHP[type];
             radiusValue = MissileLauncherAssets.MissileRadius[type];
             lifetime = MissileLauncherAssets.MissileLifetime[type];
@@ -719,9 +737,29 @@ namespace BeyondSpiderAssembly
         public Vector3 Position { get { return transform.position; } }
         public Vector3 Velocity { get { return body == null ? Vector3.zero : body.velocity; } }
         public float Radius { get { return radiusValue; } }
-        public bool IsAlive { get { return !detonated && gameObject.activeSelf && Time.time - spawnTime < lifetime; } }
+        // `this != null` is the destroyed-object test (see ITrackable.IsAlive), not dead weight: a
+        // missile is destroyed on detonation, while cached track/lock references still point at it.
+        public bool IsAlive { get { return this != null && !detonated && gameObject.activeSelf && Time.time - spawnTime < lifetime; } }
         // Mass the shield reads for its deceleration pricing (mirrors the old heavy missile's ThreatMass).
         public float ThreatMass { get { return body != null ? body.mass : MissileLauncherAssets.MissileMass[type]; } }
+        // What channel-0 threat evaluation (ADR-0014) expects this missile to deliver on impact:
+        // warhead area blast plus the direct-hit bonus, both straight from the per-type tables.
+        public float EstimatedThreatDamage
+        {
+            get
+            {
+                return SpaceBalance.MissileBlastDamage(MissileLauncherAssets.MissileWarheadCharge[type])
+                    + MissileLauncherAssets.MissileDirectDamage[type];
+            }
+        }
+        // Warhead area-blast radius (ADR-0007 derivation from the per-type charge). Channel-0
+        // threat evaluation pads the hull box with a multiple of this: a missile detonating NEAR
+        // the hull still damages it, so "would hit" must include the blast envelope, not just
+        // the airframe.
+        public float BlastRadius
+        {
+            get { return SpaceBalance.MissileBlastRadius(MissileLauncherAssets.MissileWarheadCharge[type]); }
+        }
 
         // ---- ILockable: radar-lockable exactly like the old heavy-missile BLOCK ----
         // The old block took its GuidHash from BuildingBlock.Guid; a fired missile has no block, so the
@@ -774,27 +812,37 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
+            if (Time.time - spawnTime >= armSeconds && CheckSweepHit())
+            {
+                return;
+            }
+
             // Fire control (re-)selects the target: keep the current one while it's still engageable
             // (alive and hostile, or a captain-commanded lock — see MissileFireControl.CanEngage),
             // otherwise ask the LAUNCHING ship's fire control for a fresh one. This is what lets a
             // missile launched at nothing acquire in flight, a missile whose target dies re-task, and
             // an interceptor hold onto a locked friendly target it was commanded onto with IFF off.
             ShipState ship = ownerShip;
-            if (!MissileFireControl.CanEngage(ship, target, ownerPlayerID, ownerTeam) && Time.time >= nextRetarget)
+            bool currentEngageable = MissileFireControl.CanEngage(ship, target, ownerPlayerID, ownerTeam) && !IsSiblingMissile(target);
+            if (!currentEngageable && Time.time >= nextRetarget)
             {
                 nextRetarget = Time.time + RetargetInterval;
                 // Pass ourselves so fire control never hands us back to ourselves — locking your own
                 // in-flight missile must not make it home on itself and self-detonate at zero range.
                 // In flight the nearest-hostile fallback stays on (unlike the launcher): a spent
                 // missile whose channels went empty should still chase something rather than coast.
-                target = MissileFireControl.SelectTarget(ship, ownerPlayerID, ownerTeam, transform.position,
-                    transform.forward, MissileLauncherAssets.MissileRange[type], channelMask, this, true);
+                ITrackable candidate = MissileFireControl.SelectTarget(ship, ownerPlayerID, ownerTeam, transform.position,
+                    transform.forward, MissileLauncherAssets.MissileRange[type], channelMask, channel0Assignment, this, true);
+                // A sibling missile from this same ship can still surface via the channel-lock path
+                // (e.g. IFF off, captain lock) — never home or fuze on one of our own, so drop it
+                // rather than adopt it as a target.
+                target = IsSiblingMissile(candidate) ? null : candidate;
             }
 
             bool burning = false;
             if (target != null && target.IsAlive)
             {
-                burning = MissileGuidance.Steer(transform, body, target.Position, target.Velocity, GuidanceParams());
+                burning = MissileGuidance.Steer(transform, body, target.Position, target.Velocity, GuidanceParams(target.Kind));
                 if (MissileGuidance.FuzeTriggered(transform.position, body.velocity, target.Position, target.Velocity,
                         target.Radius, SpaceBalance.MissileFuzeRadius, SpaceBalance.MissileArmingRadius))
                 {
@@ -805,7 +853,7 @@ namespace BeyondSpiderAssembly
             else
             {
                 // No target yet: coast straight, nozzle off, and keep the seeker looking.
-                if (Time.time - spawnTime < ArmSeconds)
+                if (Time.time - spawnTime < armSeconds)
                 {
                     body.AddForce(transform.forward * MissileLauncherAssets.MissileThrust[type], ForceMode.Force);
                     burning = true;
@@ -818,7 +866,71 @@ namespace BeyondSpiderAssembly
             }
         }
 
-        private MissileGuidance.GuidanceParams GuidanceParams()
+        // True for another in-flight missile launched by this same ship (ADR-0011 connectivity, not
+        // just same player/team — one player can field several ships). Sibling missiles must never
+        // guide onto, proximity-fuze on, or contact-detonate against each other: a salvo would wipe
+        // itself out the moment two of its own rounds got close. Missiles from a DIFFERENT friendly
+        // ship (or the same ship's hull/armour) are unaffected — those still resolve normally.
+        private bool IsSiblingMissile(ITrackable candidate)
+        {
+            MissileProjectile other = candidate as MissileProjectile;
+            return other != null && other != this && ownerShip != null && other.ownerShip == ownerShip;
+        }
+
+        // Anti-tunnel sweep fuze: at up to 600 m/s a missile can cross an entire armour plate within a
+        // single FixedUpdate, and OnTriggerEnter only catches overlaps that already exist at a tick
+        // boundary — a fast flyby can punch straight through unscathed between two ticks. Raycast the
+        // distance this tick's physics step is about to move it (mirrors the shell march in
+        // SpaceBallistics.RoundProjectile.FixedUpdate) and resolve the first hostile hit directly
+        // instead of waiting for the trigger to catch up.
+        private bool CheckSweepHit()
+        {
+            float speed = body.velocity.magnitude;
+            if (speed < 0.01f)
+            {
+                return false;
+            }
+            Vector3 dir = body.velocity / speed;
+            RaycastHit[] hits = Physics.RaycastAll(transform.position, dir, speed * Time.fixedDeltaTime);
+            if (hits == null || hits.Length == 0)
+            {
+                return false;
+            }
+            System.Array.Sort(hits, CompareHitDistance);
+            for (int i = 0; i < hits.Length; i++)
+            {
+                Collider col = hits[i].collider;
+                if (col == null)
+                {
+                    continue;
+                }
+                MissileProjectile otherMissile = col.GetComponentInParent<MissileProjectile>();
+                if (otherMissile != null && (otherMissile == this || otherMissile.Team == ownerTeam))
+                {
+                    continue; // never sweep-detonate on a friendly missile — this ship's or another's
+                }
+                BlockBehaviour block = col.GetComponentInParent<BlockBehaviour>();
+                if (block != null && block.Team == ownerTeam)
+                {
+                    continue; // friendly (or own-ship) block — pass through, same as OnTriggerEnter
+                }
+
+                RaycastHit hit = hits[i];
+                // Blast cloud can't carry through the surface it just struck — keep only the velocity
+                // component tangential to the hit plane (the user's spec: project onto the struck plane).
+                Vector3 blastVelocity = body.velocity - Vector3.Dot(body.velocity, hit.normal) * hit.normal;
+                Detonate(col.GetComponentInParent<IKineticTarget>() as ITrackable, hit.point, blastVelocity);
+                return true;
+            }
+            return false;
+        }
+
+        private static int CompareHitDistance(RaycastHit a, RaycastHit b)
+        {
+            return a.distance.CompareTo(b.distance);
+        }
+
+        private MissileGuidance.GuidanceParams GuidanceParams(TrackKind targetKind)
         {
             MissileGuidance.GuidanceParams p = new MissileGuidance.GuidanceParams();
             p.NavConstant = SpaceBalance.MissileNavConstant;
@@ -826,17 +938,25 @@ namespace BeyondSpiderAssembly
             p.ClosingSpeedCap = MissileLauncherAssets.MissileClosingSpeedCap[type];
             p.MaxTurnRateDeg = MissileLauncherAssets.MissileTurnRate[type];
             p.Thrust = MissileLauncherAssets.MissileThrust[type];
+            // Only cap/govern closing speed against ships; shells and other missiles are uncapped
+            // (see MissileGuidance.GuidanceParams.LimitClosingSpeed).
+            p.LimitClosingSpeed = targetKind == TrackKind.Ship;
             return p;
         }
 
-        // Contact fuze via the collision box: once armed (clear of the launcher), touching any hostile
+        // Contact fuze via the collision capsule: once armed (clear of the launcher), touching any hostile
         // block or terrain detonates. Own ship and friendlies are skipped so a missile never blows up
         // on its own hull leaving the cell.
         private void OnTriggerEnter(Collider other)
         {
-            if (detonated || Time.time - spawnTime < ArmSeconds || other == null)
+            if (detonated || Time.time - spawnTime < armSeconds || other == null)
             {
                 return;
+            }
+            MissileProjectile otherMissile = other.GetComponentInParent<MissileProjectile>();
+            if (otherMissile != null && (otherMissile == this || otherMissile.Team == ownerTeam))
+            {
+                return; // never contact-detonate on a friendly missile — this ship's or another's
             }
             BlockBehaviour block = other.GetComponentInParent<BlockBehaviour>();
             if (block != null && block.Team == ownerTeam && block.ParentMachine != null && block.ParentMachine.PlayerID == ownerPlayerID)
@@ -864,6 +984,9 @@ namespace BeyondSpiderAssembly
             }
         }
 
+        // Shields only slow a missile down (ADR 0006's hyper-velocity bleed) — they never damage or
+        // detonate it, unlike a direct kinetic/flak hit. A missile that lingers past a shield gets
+        // caught again next tick rather than dying to the field itself.
         public void ApplyShieldDeceleration(Vector3 newVelocity, float appliedDeltaV)
         {
             if (body == null || appliedDeltaV <= 0f)
@@ -871,10 +994,18 @@ namespace BeyondSpiderAssembly
                 return;
             }
             body.velocity = newVelocity;
-            ApplyDamage(MissileDamagePerDeltaV * appliedDeltaV);
         }
 
+        // Default path (proximity fuze, plain trigger contact, shoot-down cook-off): blast sits at the
+        // missile's own position and carries its full velocity, since nothing more precise is known.
         private void Detonate(ITrackable directTarget)
+        {
+            Detonate(directTarget, transform.position, body != null ? body.velocity : Vector3.zero);
+        }
+
+        // Sweep-fuze path: detonates exactly at the hit point with an explicit blast velocity (see
+        // CheckSweepHit, which projects the impact velocity onto the struck plane).
+        private void Detonate(ITrackable directTarget, Vector3 blastPosition, Vector3 blastVelocity)
         {
             if (detonated)
             {
@@ -884,10 +1015,8 @@ namespace BeyondSpiderAssembly
 
             // Vacuum fireball at the point of death — purely cosmetic, the blast damage below is
             // unchanged. Covers every detonation path (fuze, contact, shoot-down cook-off); the cloud
-            // inherits the missile's final velocity (see MissileBlastDrift).
-            SpaceEffectAssets.PlayMissileBlast(transform.position,
-                body != null ? body.velocity : Vector3.zero,
-                MissileLauncherAssets.MissileWarheadCharge[type]);
+            // inherits the given blast velocity (see MissileBlastDrift).
+            SpaceEffectAssets.PlayMissileBlast(blastPosition, blastVelocity, MissileLauncherAssets.MissileWarheadCharge[type]);
 
             // Direct hit on another penetrable target (e.g. intercepting an enemy missile) delivers the
             // per-type direct damage on top of the area blast.
@@ -895,16 +1024,94 @@ namespace BeyondSpiderAssembly
             if (kinetic != null && !ReferenceEquals(kinetic, this) && !kinetic.IsBreached)
             {
                 kinetic.ApplyKineticDamage(MissileLauncherAssets.MissileDirectDamage[type]);
+                ApplyImpactKnockback(kinetic, blastPosition);
             }
 
-            ApplyBlastDamageToArmor();
+            ApplyBlastDamageToArmor(blastPosition);
+            ApplyBlastForce(blastPosition);
             SpaceCombatRegistry.UnregisterTrackable(this);
             Destroy(gameObject);
         }
 
+        // Physical push in the missile's own travel direction, applied at the exact impact point —
+        // scoped to armour specifically (not e.g. an intercepted missile), mirroring
+        // SpaceKineticRound.ApplyImpactKnockback for shells.
+        private void ApplyImpactKnockback(IKineticTarget target, Vector3 hitPoint)
+        {
+            NanoArmorBehaviour armor = target as NanoArmorBehaviour;
+            if (armor == null || body == null)
+            {
+                return;
+            }
+            Rigidbody targetBody = armor.GetComponent<Rigidbody>();
+            float speed = body.velocity.magnitude;
+            if (targetBody == null || speed < 0.01f)
+            {
+                return;
+            }
+            Vector3 impulse = (body.velocity / speed) * (body.mass * speed * SpaceBalance.KineticImpactImpulseFraction);
+            targetBody.AddForceAtPosition(impulse, hitPoint, ForceMode.Impulse);
+        }
+
+        // Explosive shove on everything within blast range (armour, other missiles, cannon shells in
+        // flight) — separate from ApplyBlastDamageToArmor's damage-only falloff, and never decaying to
+        // zero (30% floor, see SpaceBalance.BlastForceFalloffFloor) so an intercept can still deflect
+        // an inbound salvo clear out at the edge of the blast.
+        private void ApplyBlastForce(Vector3 origin)
+        {
+            float charge = MissileLauncherAssets.MissileWarheadCharge[type];
+            float blastRadius = SpaceBalance.MissileBlastRadius(charge);
+            float baseForce = SpaceBalance.MissileBlastForce(charge);
+
+            HashSet<Rigidbody> pushed = new HashSet<Rigidbody>();
+
+            // Armour, missiles, and any other collider-bearing block in range.
+            Collider[] hits = Physics.OverlapSphere(origin, blastRadius);
+            for (int i = 0; i < hits.Length; i++)
+            {
+                Rigidbody rb = hits[i].attachedRigidbody;
+                if (rb == null || rb == body || !pushed.Add(rb))
+                {
+                    continue;
+                }
+                PushWithBlast(rb, origin, blastRadius, baseForce);
+            }
+
+            // Cannon shells carry no collider at all (raycast-only hit detection, ADR-0007), so the
+            // overlap sweep above can never see them — walk the trackable registry directly instead.
+            IList<ITrackable> trackables = SpaceCombatRegistry.Trackables;
+            for (int i = 0; i < trackables.Count; i++)
+            {
+                SpaceKineticRound round = trackables[i] as SpaceKineticRound;
+                if (round == null || !round.IsAlive)
+                {
+                    continue;
+                }
+                Rigidbody rb = round.GetComponent<Rigidbody>();
+                if (rb == null || !pushed.Add(rb))
+                {
+                    continue;
+                }
+                PushWithBlast(rb, origin, blastRadius, baseForce);
+            }
+        }
+
+        private static void PushWithBlast(Rigidbody rb, Vector3 origin, float blastRadius, float baseForce)
+        {
+            Vector3 offset = rb.position - origin;
+            float distance = offset.magnitude;
+            if (distance > blastRadius)
+            {
+                return;
+            }
+            Vector3 dir = distance > 0.01f ? offset / distance : Random.onUnitSphere;
+            float falloff = Mathf.Lerp(1f, SpaceBalance.BlastForceFalloffFloor, Mathf.Clamp01(distance / blastRadius));
+            rb.AddForce(dir * baseForce * falloff, ForceMode.Impulse);
+        }
+
         // Warhead area blast (ADR-0007 derivation): the charge alone drives blast damage (linear) and
         // radius (cube-root of yield), applied to every armour block within range with linear falloff.
-        private void ApplyBlastDamageToArmor()
+        private void ApplyBlastDamageToArmor(Vector3 origin)
         {
             float charge = MissileLauncherAssets.MissileWarheadCharge[type];
             float baseBlastDamage = SpaceBalance.MissileBlastDamage(charge);
@@ -918,7 +1125,7 @@ namespace BeyondSpiderAssembly
                     {
                         continue;
                     }
-                    float distance = Vector3.Distance(transform.position, armor.transform.position);
+                    float distance = Vector3.Distance(origin, armor.transform.position);
                     if (distance > blastRadius)
                     {
                         continue;
@@ -997,6 +1204,66 @@ namespace BeyondSpiderAssembly
             return tailOffsetCache[type];
         }
 
+        // Capsule collider dimensions, measured once per type the same way as TailOffset above (round
+        // mesh bounds rotated by RoundMeshEuler, scaled by MissileMeshScale) rather than a hand-tuned
+        // box, so the hit volume tracks whatever the model actually looks like. The capsule runs along
+        // local +Z — the missile's travel axis, same frame TailOffset measures in.
+        private static readonly float[] colliderRadiusCache = new float[TypeCount];
+        private static readonly float[] colliderHeightCache = new float[TypeCount];
+        private static readonly Vector3[] colliderCenterCache = new Vector3[TypeCount];
+        private static readonly bool[] colliderMeasured = new bool[TypeCount];
+
+        private static void MeasureCollider(int type)
+        {
+            if (colliderMeasured[type])
+            {
+                return;
+            }
+            colliderMeasured[type] = true;
+
+            Bounds bounds = ModResource.GetMesh(RoundMeshName[type]).Mesh.bounds;
+            Quaternion rotation = Quaternion.Euler(RoundMeshEuler[type]);
+            float scale = MissileMeshScale[type];
+            Vector3 min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+            Vector3 max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+            for (int corner = 0; corner < 8; corner++)
+            {
+                Vector3 point = new Vector3(
+                    (corner & 1) == 0 ? bounds.min.x : bounds.max.x,
+                    (corner & 2) == 0 ? bounds.min.y : bounds.max.y,
+                    (corner & 4) == 0 ? bounds.min.z : bounds.max.z);
+                Vector3 transformed = rotation * (point * scale);
+                min = Vector3.Min(min, transformed);
+                max = Vector3.Max(max, transformed);
+            }
+
+            // Radius covers the wider of the two cross-axes so the capsule never clips inside the
+            // visible body; height spans the full measured length so the end caps land at the nose and
+            // tail instead of sitting inset from them.
+            float radius = Mathf.Max(0.05f, Mathf.Max(max.x - min.x, max.y - min.y) * 0.5f);
+            colliderRadiusCache[type] = radius;
+            colliderHeightCache[type] = Mathf.Max(radius * 2f, max.z - min.z);
+            colliderCenterCache[type] = new Vector3((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f, (min.z + max.z) * 0.5f);
+        }
+
+        public static float ColliderRadius(int type)
+        {
+            MeasureCollider(type);
+            return colliderRadiusCache[type];
+        }
+
+        public static float ColliderHeight(int type)
+        {
+            MeasureCollider(type);
+            return colliderHeightCache[type];
+        }
+
+        public static Vector3 ColliderCenter(int type)
+        {
+            MeasureCollider(type);
+            return colliderCenterCache[type];
+        }
+
         // ---- Magazine ----
         public static readonly int[] PitCount = { 16, 4, 1 };
         public static readonly float[] ReloadTime = { 1.0f, 3.0f, 8.0f };    // seconds to refill ONE cell
@@ -1012,13 +1279,12 @@ namespace BeyondSpiderAssembly
         public static readonly float[] MissileClosingSpeedCap = { 600f, 600f, 600f }; // m/s
         public static readonly float[] MissileTurnRate = { 600f, 300f, 40f };          // deg/s (maneuverability)
         public static readonly float[] MissileMass = { 0.5f, 3f, 20f };               // weight
-        public static readonly float[] MissileWarheadCharge = { 8f, 40f, 160f };      // 装药 → blast dmg/radius
+        public static readonly float[] MissileWarheadCharge = { 8f, 30f, 200f };      // 装药 → blast dmg/radius
         public static readonly float[] MissileRange = { 1000f, 3000f, 10000f };         // launch/target gate (m)
         public static readonly float[] MissileStructuralHP = { 5f, 10f, 80f };        // shoot-down toughness
         public static readonly float[] MissileRadius = { 3f, 5f, 10f };          // track + fuze size
         public static readonly float[] MissileLifetime = { 10f, 20f, 250f };           // seconds
         public static readonly float[] MissileDirectDamage = { 200f, 600f, 1500f };   // direct hit bonus
-        public static readonly Vector3[] ColliderSize = { new Vector3(0.4f, 0.4f, 1.2f), new Vector3(0.6f, 0.6f, 2f), new Vector3(1f, 1f, 4f) };
 
         // ---- Cell layouts (local positions on the block, per type) ----
         // Placeholder grids; hand-tune these against the actual Open-S/M/L models. Cells lie in the

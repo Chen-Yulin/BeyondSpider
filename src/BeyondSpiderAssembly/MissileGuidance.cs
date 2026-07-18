@@ -17,6 +17,12 @@ namespace BeyondSpiderAssembly
             public float ClosingSpeedCap;  // Vcap (m/s) on the LOS-parallel closing speed
             public float MaxTurnRateDeg;   // attitude slew limit (deg/s)
             public float Thrust;           // nozzle force (N) when burning
+            // Ships are large, slow-turning targets where a tight terminal turn radius (which the
+            // cap buys, r = Vc^2/a_lat) matters more than raw closing speed. Shells and missiles are
+            // fast, near-ballistic point targets where catching up matters more than a tidy turn
+            // radius, so their closing speed is left uncapped (see the ship-only check at the call
+            // site). When false, the governor never fades or brakes — see Steer().
+            public bool LimitClosingSpeed;
         }
 
         // Below this command magnitude the missile neither steers nor burns (coast).
@@ -55,21 +61,30 @@ namespace BeyondSpiderAssembly
 
             // Longitudinal channel: closing-speed governor on the LOS-parallel component. Below the
             // cap it commands prograde thrust (fading to zero at the cap); a small overshoot coasts;
-            // a large overspeed commands retrograde braking.
-            float closingSpeed = Vector3.Dot(body.velocity - targetVelocity, rHat);
-            float speedError = p.ClosingSpeedCap - closingSpeed;
+            // a large overspeed commands retrograde braking. Uncapped targets (shells, missiles)
+            // skip the fade/brake entirely and always push prograde at full strength, so the missile
+            // keeps closing as hard as it can instead of throttling back near an arbitrary speed.
             float aLong;
-            if (speedError >= 0f)
+            if (p.LimitClosingSpeed)
             {
-                aLong = p.GovernorGain * speedError;
-            }
-            else if (speedError < -GovernorBrakeBand)
-            {
-                aLong = p.GovernorGain * (speedError + GovernorBrakeBand);
+                float closingSpeed = Vector3.Dot(body.velocity - targetVelocity, rHat);
+                float speedError = p.ClosingSpeedCap - closingSpeed;
+                if (speedError >= 0f)
+                {
+                    aLong = p.GovernorGain * speedError;
+                }
+                else if (speedError < -GovernorBrakeBand)
+                {
+                    aLong = p.GovernorGain * (speedError + GovernorBrakeBand);
+                }
+                else
+                {
+                    aLong = 0f;
+                }
             }
             else
             {
-                aLong = 0f;
+                aLong = p.GovernorGain * p.ClosingSpeedCap;
             }
 
             Vector3 command = aLat + aLong * rHat;

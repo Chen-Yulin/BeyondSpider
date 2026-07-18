@@ -12,7 +12,7 @@
 	<Version>0.1.0</Version>
 	
 	<Description>
-First playable space-combat slice: ship core, energy grid, capacitors, radar tracks, defense director, shield projector, CIWS, and heavy incoming missile.
+First playable space-combat slice: ship core, energy grid, capacitors, radar tracks, captain-driven fire control, shield projector, CIWS, and heavy incoming missile.
 	</Description>
 	
 	<!-- Square icon of the mod. Texture defined in the Resources section.
@@ -92,7 +92,6 @@ First playable space-combat slice: ship core, energy grid, capacitors, radar tra
 		<Block path="Captain.xml" />
 		<Block path="SuperCapacitor.xml" />
 		<Block path="RadarPanel.xml" />
-		<Block path="DefenseDirector.xml" />
 		<Block path="ShieldProjector.xml" />
 		<Block path="SpaceFlakTurret.xml" />
 		<Block path="Railgun.xml" />
@@ -134,8 +133,6 @@ First playable space-combat slice: ship core, energy grid, capacitors, radar tra
 		<Texture name="BS FusionCore Texture" path="FusionCore\Engine.png"/>
 		<Mesh name="BS Captain Mesh" path="ShipCore\captain.obj"/>
 		<Texture name="BS Captain Texture" path="ShipCore\captain.png"/>
-		<Mesh name="BS DefenseDirector Mesh" path="DefenseDirector\AAController.obj"/>
-		<Texture name="BS DefenseDirector Texture" path="DefenseDirector\AAMode.png"/>
 		<Mesh name="BS SuperCap Mesh" path="SuperCapacitor\Battery.obj"/>
 		<Texture name="BS SuperCap Texture" path="SuperCapacitor\Battery.png"/>
 		<Mesh name="BS Radar Mesh" path="Radar\radar.obj"/>

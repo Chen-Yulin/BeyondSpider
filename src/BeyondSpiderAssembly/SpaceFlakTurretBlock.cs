@@ -140,11 +140,10 @@ namespace BeyondSpiderAssembly
 
         private bool active;
         private bool hasTarget;
-        // The target of the solution this turret is currently steering at — the channel target
-        // when one was selected, else the defensive target. ApplyParticleDamage settles the
-        // small-caliber stream against THIS, not blindly against ship.DefensiveSolution (which
-        // may be a different object than what the barrel is actually pointing at now that
-        // channels exist — ADR-0010).
+        // The target of the solution this turret is currently steering at (whichever channel
+        // TrySelectSolution picked — channel 0's auto air-defence lock or a player-assigned
+        // channel, ADR-0010/ADR-0012). ApplyParticleDamage settles the small-caliber stream
+        // against THIS, the object the barrel is actually pointing at right now.
         private ITrackable engagedTarget;
         private bool shooting;
         private float caliber = 20f;
@@ -174,6 +173,9 @@ namespace BeyondSpiderAssembly
         // Cached delegate for FireChannels.TrySelectSolution's per-candidate 射界 test, so the
         // per-tick channel walk doesn't allocate a fresh delegate every FixedUpdate.
         private FireChannels.ArcCheck channelArcCheck;
+        // This turret's personal channel-0 lottery ticket (ADR-0014): which of the ship's up-to-4
+        // channel-0 threats it engages, sticky until that target drops off the list.
+        private readonly FireChannelAssignment channel0Assignment = new FireChannelAssignment();
 
         public override void SafeAwake()
         {
@@ -209,6 +211,7 @@ namespace BeyondSpiderAssembly
             base.OnSimulateStart();
             GuidHash = BlockBehaviour.BuildingBlock.Guid.GetHashCode();
             active = DefaultActive.IsActive;
+            channel0Assignment.Clear();
             ResolveType();
             originVis = transform.Find("Vis") == null ? null : transform.Find("Vis").gameObject;
             InitSimulationModel();
@@ -350,25 +353,15 @@ namespace BeyondSpiderAssembly
             // turret's range or yaw/pitch reach (射界, channelArcCheck) skipped entirely. The
             // captain's IFF override (CanCommandLockedFireAt) is applied per candidate inside
             // TrySelectSolution, so a locked friendly/own-team target stays engageable with IFF
-            // off and is never re-filtered by SpaceBallistics.IsHostile() below. No channel
-            // target → same defensive-solution fallback as before.
+            // off and is never re-filtered by SpaceBallistics.IsHostile() below. Channel 0 is the
+            // sole point-defense target source now (ADR-0012 retired the separate
+            // DefenseDirectorBlock/DefensiveSolution fallback that used to live here).
             FireSolution solution;
-            if (!FireChannels.TrySelectSolution(ship, FireChannel.Value, GetMuzzlePosition(), muzzleVelocity,
+            if (!FireChannels.TrySelectSolution(ship, FireChannel.Value, channel0Assignment, GetMuzzlePosition(), muzzleVelocity,
                     GetMuzzleForward(), range, channelArcCheck, out solution))
             {
-                if (ship.DefensiveSolution.Target == null || !SpaceBallistics.IsHostile(this, ship.DefensiveSolution.Target))
-                {
-                    SetSmallShoot(false);
-                    return;
-                }
-
-                solution = ship.DefensiveSolution;
-                SensorTrack synthetic = new SensorTrack();
-                synthetic.Position = solution.Target.Position;
-                synthetic.Velocity = solution.Target.Velocity;
-                // Lead in the ship's frame: the turret inherits the ship's (core's) velocity — ADR 0006.
-                Vector3 shipVelocity = ship.Core != null ? ship.Core.Velocity : Vector3.zero;
-                solution.AimPoint = SpaceBallistics.AimPoint(GetMuzzlePosition(), synthetic, muzzleVelocity, shipVelocity);
+                SetSmallShoot(false);
+                return;
             }
 
             Vector3 aimPoint = solution.AimPoint;

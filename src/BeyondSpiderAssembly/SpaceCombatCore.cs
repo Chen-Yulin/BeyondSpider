@@ -29,6 +29,13 @@ namespace BeyondSpiderAssembly
         Vector3 Position { get; }
         Vector3 Velocity { get; }
         float Radius { get; }
+        // Must stay callable on an ALREADY-DESTROYED object — that is the question it answers.
+        // Consumers hold trackables across frames (ship.Tracks between radar scans, ship.ChannelTargets,
+        // a missile's chase target) and rounds/missiles die mid-flight, so a stale reference asking
+        // "are you still there?" is the normal case, not an error. A Unity-backed implementor must
+        // therefore test `this != null` (Unity's == reports a destroyed object as null) BEFORE it
+        // touches gameObject/transform, or the managed-to-native getter throws NullReference.
+        // Position/Velocity carry no such promise: read them only once IsAlive has returned true.
         bool IsAlive { get; }
     }
 
@@ -47,6 +54,10 @@ namespace BeyondSpiderAssembly
         public Vector3 Velocity;
         public float Distance;
         public float TimeToImpact;
+        // Time.time of the scan that produced this record. The radar screen dead-reckons a blip
+        // from Position/Velocity over the age of its track, so it keeps moving smoothly between
+        // scans instead of stepping once per scan interval.
+        public float ScanTime;
         public TrackKind Kind;
     }
 
@@ -217,8 +228,13 @@ namespace BeyondSpiderAssembly
         public int CoreGuidHash;
         // Captain's Ship Name text when set, otherwise a per-player ordinal fallback ("SHIP 2").
         public string Name = "";
-        // Core-local OBB of the whole hull, measured once by the tick-3 partition.
+        // Core-local OBB of the whole hull, measured once by the tick-3 partition (orientation-
+        // only frame: rotate by the core's rotation about the core's position, no scale).
+        // HullLocalCenter is the box center's offset from the core in that frame — the hull is
+        // not necessarily centered on the core block. The captain's channel-0 threat gate tests
+        // predicted impacts against this box (包络盒), see SpaceCaptainBlock.PredictHullImpact.
         public Vector3 HullSize;
+        public Vector3 HullLocalCenter;
         public float HullVolume;
         // Primary core (identity, power-share sliders); Cores holds every core in the component —
         // a multi-core hull merges reactor output (合并出力).
@@ -228,7 +244,6 @@ namespace BeyondSpiderAssembly
         public readonly EnergyGrid Energy = new EnergyGrid();
         public readonly List<SuperCapacitorBlock> Capacitors = new List<SuperCapacitorBlock>();
         public readonly List<RadarPanelBlock> Radars = new List<RadarPanelBlock>();
-        public readonly List<DefenseDirectorBlock> Directors = new List<DefenseDirectorBlock>();
         public readonly List<ShieldProjectorBlock> Shields = new List<ShieldProjectorBlock>();
         public readonly List<SpaceFlakTurretBlock> FlakTurrets = new List<SpaceFlakTurretBlock>();
         // Kinetic railgun barrels and beam laser lances alike (both IShipGun) — the SpaceGunner
@@ -238,11 +253,23 @@ namespace BeyondSpiderAssembly
         public readonly List<MissileLauncherBlock> Launchers = new List<MissileLauncherBlock>();
         public readonly List<SpaceGunnerBlock> Gunners = new List<SpaceGunnerBlock>();
         public readonly List<SensorTrack> Tracks = new List<SensorTrack>();
-        public FireSolution DefensiveSolution;
         // Multi-channel fire control (ADR-0010): one independent lock per fire channel.
         // Channel 0 is the air-defence channel (captain auto-locks the highest closing threat,
-        // player may override); channels 1-3 are player-assigned from the radar screen.
+        // player may override); channels 1-3 are player-assigned from the radar screen. Every
+        // anti-air / point-defense weapon reads channel 0 directly (ADR-0012 retired the
+        // separate DefenseDirectorBlock/DefensiveSolution field).
         public readonly ITrackable[] ChannelTargets = new ITrackable[FireChannels.Count];
+        // Channel-0 multi-target threat list (ADR-0014): up to FireChannels.Channel0MaxTargets
+        // contacts, rank-ordered by threat score sqrt(damage) / (impactTime + 0.5s), rebuilt
+        // host-side every tick by the seated captain (ammunition only — ships never auto-enter).
+        // A manual channel-0 lock is pinned at rank 0. ChannelTargets[0] always mirrors rank 0;
+        // channel-0 weapons draw their individual target from this list via their own
+        // FireChannelAssignment lottery.
+        public readonly List<ITrackable> Channel0Threats = new List<ITrackable>();
+        // Per-channel 雷达筛选 (ADR-0013): a RadarFilter category bitmask deciding which kinds of
+        // contact this channel draws on the radar screen and may lock — channel 0's automatic
+        // air-defence selection obeys its own row too. Player-set from the radar's filter bar.
+        public readonly int[] ChannelFilters = RadarFilter.NewChannelFilters();
         // True while the player holds a hand-placed lock on channel 0 — the captain's auto
         // threat selection pauses until the lock is cleared or its target dies.
         public bool Channel0ManualLock;
@@ -563,15 +590,8 @@ namespace BeyondSpiderAssembly
             GUILayout.Label("Tracks: " + ship.Tracks.Count + "  Shields: " + ship.Shields.Count);
             GUILayout.Label("Armor blocks: " + ship.Armor.Count + "  " + FormatArmor(ship));
             ShowArmorHP = GUILayout.Toggle(ShowArmorHP, "Show Armor HP");
-            if (ship.DefensiveSolution.Target != null)
-            {
-                GUILayout.Label("Defense target: " + ship.DefensiveSolution.Target.Kind + "  TTI "
-                    + ship.DefensiveSolution.TimeToImpact.ToString("0.0") + "s");
-            }
-            else
-            {
-                GUILayout.Label("Defense target: none");
-            }
+            ITrackable channel0 = ship.ChannelTargets[0];
+            GUILayout.Label(channel0 != null ? "Channel 0 target: " + channel0.Kind : "Channel 0 target: none");
             GUILayout.EndArea();
         }
 

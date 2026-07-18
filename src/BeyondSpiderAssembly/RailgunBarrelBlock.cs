@@ -23,7 +23,7 @@ namespace BeyondSpiderAssembly
         // Caliber/bore length/muzzle velocity used to be player-set sliders; they're now derived
         // from the block's own build-mode scale instead, so the player sizes the barrel visually
         // and these follow automatically. See agent-besiege-mod-guide.md for the derivation.
-        private const float CaliberFromScaleCoefficient = 400f;
+        private const float CaliberFromScaleCoefficient = 300f;
         private const float BoreLengthFromScaleCoefficient = 16000f;
         private const float MuzzleVelocityPerBoreLength = 65f;
         // Fixed firing overhead added on top of the per-damage cost from SpaceBalance; the
@@ -280,6 +280,9 @@ namespace BeyondSpiderAssembly
         private bool fireEmulated;
         private float nextBindRefresh;
         private IShipGun referenceGun;
+        // This gunner's personal channel-0 lottery ticket (ADR-0014): which of the ship's up-to-4
+        // channel-0 threats it steers its bound guns at, sticky until that target drops off the list.
+        private readonly FireChannelAssignment channel0Assignment = new FireChannelAssignment();
 
         // Empirical hinge direction calibration. Whether AngleToBe += x turns the gun in the
         // +x direction around a hinge's axis depends on how the hinge was placed/flipped, and
@@ -327,6 +330,7 @@ namespace BeyondSpiderAssembly
             base.OnSimulateStart();
             GuidHash = BlockBehaviour.BuildingBlock.Guid.GetHashCode();
             active = DefaultActive.IsActive;
+            channel0Assignment.Clear();
             fireEmulated = false;
             nextBindRefresh = 0f;
             calibrationPhase = HingeCalibrationPhase.NotStarted;
@@ -484,26 +488,13 @@ namespace BeyondSpiderAssembly
             // angle/distance score among this gunner's other enabled channels. No arc check —
             // the turret's real reach lives in its player-built hinge limits, which are opaque
             // here; an unreachable target simply never aligns, so fire emulation stays off. The
-            // captain's IFF override is applied per candidate inside TrySelectSolution.
-            if (FireChannels.TrySelectSolution(ship, FireChannel.Value, referenceGun.ApproximateMuzzlePosition(),
-                    referenceGun.CurrentMuzzleVelocity(), referenceGun.transform.forward, float.MaxValue, null, out solution))
-            {
-                return true;
-            }
-
-            if (ship.DefensiveSolution.Target == null)
-            {
-                return false;
-            }
-
-            solution = ship.DefensiveSolution;
-            SensorTrack synthetic = new SensorTrack();
-            synthetic.Position = solution.Target.Position;
-            synthetic.Velocity = solution.Target.Velocity;
-            // Lead in the ship's frame: every barrel inherits the ship's (core's) velocity — ADR 0006.
-            Vector3 shipVelocity = ship.Core != null ? ship.Core.Velocity : Vector3.zero;
-            solution.AimPoint = SpaceBallistics.AimPoint(referenceGun.ApproximateMuzzlePosition(), synthetic, referenceGun.CurrentMuzzleVelocity(), shipVelocity);
-            return SpaceBallistics.IsHostile(this, solution.Target);
+            // captain's IFF override is applied per candidate inside TrySelectSolution. Channel 0
+            // itself is the sole point-defense target source now (ADR-0012 retired the separate
+            // DefenseDirectorBlock/DefensiveSolution fallback that used to live here) — the
+            // captain's auto air-defence lock already covers bare cannon shells/large projectiles
+            // via ship.Tracks, not just ILockable ships/missiles, so this single call is enough.
+            return FireChannels.TrySelectSolution(ship, FireChannel.Value, channel0Assignment, referenceGun.ApproximateMuzzlePosition(),
+                referenceGun.CurrentMuzzleVelocity(), referenceGun.transform.forward, float.MaxValue, null, out solution);
         }
 
         private void InitLinkLines()

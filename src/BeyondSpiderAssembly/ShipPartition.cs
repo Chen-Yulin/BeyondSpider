@@ -393,10 +393,12 @@ namespace BeyondSpiderAssembly
             if (!any)
             {
                 ship.HullSize = Vector3.zero;
+                ship.HullLocalCenter = Vector3.zero;
                 ship.HullVolume = 0f;
                 return;
             }
             ship.HullSize = max - min;
+            ship.HullLocalCenter = (min + max) * 0.5f;
             ship.HullVolume = ship.HullSize.x * ship.HullSize.y * ship.HullSize.z;
         }
 
@@ -459,8 +461,27 @@ namespace BeyondSpiderAssembly
                 }
                 lateRetryAt.Remove(block);
             }
+            else if (frontier.Count == 0)
+            {
+                // The walk drained the whole connectivity component (never hit the visit
+                // budget) without crossing a mapped ship — this component has no core
+                // anywhere, not just "not partitioned yet". Cache every block in it as
+                // permanently shipless (same null-entry convention Partition() uses for
+                // unreachable blocks), so every other subsystem block sharing this component
+                // (armor, guns, radar, ...) gets an O(1) dictionary hit on its own OwnShip()
+                // call instead of independently re-walking the same component every
+                // LateResolveRetrySeconds forever. A core placed later invalidates this via
+                // DropMachine when the machine gets re-partitioned.
+                for (int i = 0; i < componentBuffer.Count; i++)
+                {
+                    SpaceCombatRegistry.MapBlock(componentBuffer[i], null);
+                }
+                lateRetryAt.Remove(block);
+            }
             else
             {
+                // Hit the visit budget before resolving either way — the component may still
+                // contain an unreached ship, so only cache a short retry, not a verdict.
                 lateRetryAt[block] = Time.time + LateResolveRetrySeconds;
             }
             visited.Clear();

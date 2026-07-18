@@ -91,6 +91,27 @@ namespace BeyondSpiderAssembly
         public const float RicochetDamageFraction = 0.5f;
         public const float RicochetScatterDeg = 6f;
 
+        // ---- Kinetic impact knockback (physical feedback alongside the damage-only model above) ----
+        // A shell or missile striking armour that's still standing (HP != 0, i.e. not yet breached)
+        // also shoves it in the round/missile's own travel direction at the exact impact point — a
+        // fraction of the striker's own momentum (mass * speed), so heavier/faster hits knock harder
+        // without a separate tuning knob per weapon. Placeholder fraction pending in-game tuning.
+        public const float KineticImpactImpulseFraction = 0.002f;
+
+        // ---- Blast knockback (physical feedback alongside MissileBlastDamage/Radius above) ----
+        // A missile's explosion also shoves everything nearby off course — including cannon shells
+        // flying through the blast, which is the point: a well-timed intercept can throw off an
+        // inbound salvo's aim. Unlike blast DAMAGE (which falls off linearly to zero at the radius),
+        // this force floors at BlastForceFalloffFloor so the edge of the blast still gives a real
+        // shove instead of fading out. Placeholder scale pending in-game tuning.
+        public const float MissileBlastForcePerCharge = 30f;
+        public const float BlastForceFalloffFloor = 0.3f;
+
+        public static float MissileBlastForce(float warheadCharge)
+        {
+            return Mathf.Max(0f, warheadCharge) * MissileBlastForcePerCharge;
+        }
+
         // ---- Missiles as penetrable targets (ADR-0007) ----
         // A point-defence interceptor gets this tiny fixed structural HP so a round (or any AA)
         // can shoot it down; a heavy missile's own Health slider is its structural HP directly.
@@ -101,7 +122,7 @@ namespace BeyondSpiderAssembly
         // 650-HP / 24-charge missile keeps its old ~50 mass, ~384 blast damage, ~40 m radius.
         public const float MissileMassPerHealth = 0.04f;
         public const float MissileBlastDamagePerCharge = 16f;
-        public const float MissileBlastRadiusScale = 13.9f;
+        public const float MissileBlastRadiusScale = 3.9f;
 
         // ---- Missile guidance (ADR-0008) ----
         // Both guided munitions steer a single rear nozzle by proportional navigation plus a

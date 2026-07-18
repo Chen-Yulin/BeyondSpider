@@ -9,6 +9,18 @@ namespace BeyondSpiderAssembly
         public MSlider ConeAngle;
         public MToggle Iff;
 
+        // 20 Hz, up from the old 4 Hz. Sensor tracks feed both the radar screen's blips and the
+        // captain's lead solutions; the screen dead-reckons between scans (CaptainRadarView) so it
+        // no longer needs the rate to look smooth, but a 250ms-stale track still shows up as a
+        // stale aim point on a fast crosser. A scan is a distance + cone-angle test over the
+        // trackable registry, so the extra rate costs almost nothing.
+        private const float ScanInterval = 0.05f;
+        // How long after one radar refreshes ship.Tracks its sisters may still append to that same
+        // list rather than clearing it again. Every radar scans on the same grid tick (see
+        // SimulateFixedUpdateHost), so this only has to absorb float noise while staying well
+        // under ScanInterval.
+        private const float TrackRefreshWindow = ScanInterval * 0.5f;
+
         private float nextScanTime;
         // See agent-besiege-mod-guide.md's "注册时序规范" — retried each tick until it
         // succeeds, since ShipState may not exist yet when this OnSimulateStart runs.
@@ -61,14 +73,18 @@ namespace BeyondSpiderAssembly
             {
                 return;
             }
-            nextScanTime = Time.time + 0.25f;
+            // Phase-locked to a shared global grid rather than "now + interval": every radar on a
+            // ship has to scan in the SAME FixedUpdate for the clear-then-append merge below to
+            // keep all of their tracks. On its own phase, a radar placed mid-simulation would fall
+            // outside TrackRefreshWindow and wipe its sisters' tracks every round.
+            nextScanTime = (Mathf.Floor(Time.time / ScanInterval) + 1f) * ScanInterval;
 
             if (ship == null)
             {
                 return;
             }
 
-            if (Time.time - ship.LastRefreshTime > 0.05f)
+            if (Time.time - ship.LastRefreshTime > TrackRefreshWindow)
             {
                 ship.Tracks.Clear();
                 ship.LastRefreshTime = Time.time;
@@ -107,6 +123,7 @@ namespace BeyondSpiderAssembly
                 track.Velocity = target.Velocity;
                 track.Distance = distance;
                 track.Kind = target.Kind;
+                track.ScanTime = Time.time;
                 track.TimeToImpact = EstimateTimeToImpact(target, ship.Core);
                 ship.Tracks.Add(track);
             }

@@ -67,11 +67,11 @@
     <Compile Include="MInfo.cs" />
     <Compile Include="FireChannels.cs" />
     <Compile Include="MFireChannel.cs" />
+    <Compile Include="RadarFilter.cs" />
     <Compile Include="SpaceShipCore.cs" />
     <Compile Include="SpaceCaptainBlock.cs" />
     <Compile Include="SuperCapacitorBlock.cs" />
     <Compile Include="RadarPanelBlock.cs" />
-    <Compile Include="DefenseDirectorBlock.cs" />
     <Compile Include="ShieldProjectorBlock.cs" />
     <Compile Include="MissileGuidance.cs" />
     <Compile Include="MissileLauncherBlock.cs" />

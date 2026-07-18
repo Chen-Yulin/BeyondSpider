@@ -47,8 +47,8 @@ namespace BeyondSpiderAssembly
     //   * core LineRenderer — the hot center;
     //   * halo LineRenderer — a wider, dimmer sheath whose width breathes on its own noise track,
     //     so core and halo pulse against each other (粗细高频变化);
-    //   * two bolt LineRenderers — jagged helices re-randomized every frame that coil around the
-    //     beam axis in opposite phase and randomly drop out for a frame (雷电缠绕);
+    //   * three bolt LineRenderers — jagged helices re-randomized every frame that coil around the
+    //     beam axis at evenly spaced phases and randomly drop out for a frame (雷电缠绕);
     //   * sheath ParticleSystem — additive glow motes scattered along the beam every frame, plus
     //     an origin burst on Show (muzzle flash for the main beam, impact flash for a reflection).
     // Brightness rides a second noise track times the fade-out, and the point light at the beam
@@ -60,19 +60,23 @@ namespace BeyondSpiderAssembly
     public class LaserBeamFx : MonoBehaviour
     {
         private const float HaloWidthFactor = 2.6f;
-        private const float BoltWidthFactor = 0.35f;
+        private const float BoltWidthFactor = 0.45f;
         // Bolt helix radius in beam widths, and how much of that radius the per-frame vertex
         // jitter may add — the jitter is what turns a clean helix into crackling lightning.
-        private const float BoltCoilRadiusFactor = 3.2f;
-        private const float BoltJitterFactor = 0.55f;
-        private const int MaxBoltSegments = 34;
-        private const float BoltSegmentLength = 3f;
+        private const float BoltCoilRadiusFactor = 4f;
+        private const float BoltJitterFactor = 0.7f;
+        private const int MaxBoltSegments = 40;
+        private const float BoltSegmentLength = 2.2f;
         // Helix twist along the beam. Capped per-segment below so a long-range beam whose
         // segments span tens of meters can't alias into random zigzag (>~1 rad between verts).
-        private const float BoltTwistPerMeter = 0.45f;
+        private const float BoltTwistPerMeter = 0.65f;
         private const float BoltSpinSpeed = 40f;
         // Chance per frame that a bolt blanks out — electric intermittency.
-        private const float BoltDropoutChance = 0.15f;
+        private const float BoltDropoutChance = 0.12f;
+        // Bolt colour is pushed brighter than the core/halo layers so the coiling arcs read as
+        // hotter than the beam they wrap, then falls off harder along its length.
+        private const float BoltGlowBoost = 1.2f;
+        private const float BoltTailFade = 0.7f;
         // Perlin sample speeds for the two decorrelated noise tracks. ~30/s steps the noise far
         // enough per frame at 60fps that consecutive frames land on unrelated values: the
         // "high-frequency" part of the brief.
@@ -84,10 +88,17 @@ namespace BeyondSpiderAssembly
         // cap keeps a 1200 m full-range miss from flooding the particle budget.
         private const float SheathMotesPerMeter = 0.3f;
         private const int MaxSheathMotesPerFrame = 14;
+        // Once the visible timer expires, the deterministic lines/bolts/light are hidden at once
+        // (they're already at zero glow by then — fade reaches 0 exactly when timer does), but the
+        // sheath's already-emitted motes can still have up to ~0.28s of life left (see
+        // EmitSheathMotes). Destroying/deactivating the object immediately used to truncate those
+        // mid-flight; instead we hold the object alive — motes only, nothing new emitted — until
+        // they've either finished naturally or this grace period runs out.
+        private const float FinishGraceTime = 0.35f;
 
         private LineRenderer coreLine;
         private LineRenderer haloLine;
-        private readonly LineRenderer[] bolts = new LineRenderer[2];
+        private readonly LineRenderer[] bolts = new LineRenderer[3];
         private ParticleSystem sheath;
         private Light glowLight;
 
@@ -101,6 +112,8 @@ namespace BeyondSpiderAssembly
         private float intensity = 1f;
         private float noiseSeed;
         private bool autoDestroy;
+        private bool finishing;
+        private float finishGraceRemaining;
 
         private Color coreColor;
         private Color edgeColor;
@@ -143,24 +156,36 @@ namespace BeyondSpiderAssembly
             duration = Mathf.Max(0.01f, visibleTime);
             timer = duration;
             intensity = Mathf.Max(0f, intensityScale);
+            finishing = false;
             gameObject.SetActive(true);
+            if (coreLine != null)
+            {
+                coreLine.enabled = true;
+            }
+            if (haloLine != null)
+            {
+                haloLine.enabled = true;
+            }
             EmitBurst(start, OriginBurstCount);
             ApplyVisual();
         }
 
         private void Update()
         {
+            if (finishing)
+            {
+                finishGraceRemaining -= Time.deltaTime;
+                if (finishGraceRemaining <= 0f || (sheath != null && !sheath.IsAlive()))
+                {
+                    FinishNow();
+                }
+                return;
+            }
+
             timer -= Time.deltaTime;
             if (timer <= 0f)
             {
-                if (autoDestroy)
-                {
-                    Destroy(gameObject);
-                }
-                else
-                {
-                    gameObject.SetActive(false);
-                }
+                BeginFinish();
                 return;
             }
 
@@ -170,6 +195,48 @@ namespace BeyondSpiderAssembly
             }
             ApplyVisual();
             EmitSheathMotes();
+        }
+
+        // Beam reached the end of its visible time: the line/bolt/light layers are already at
+        // zero glow (fade hit 0 exactly when timer did), so they can disappear now with nothing
+        // to truncate. The sheath keeps simulating untouched — no more motes are emitted, but the
+        // ones already in flight are left to finish their own lifetime instead of being cut off.
+        private void BeginFinish()
+        {
+            finishing = true;
+            finishGraceRemaining = FinishGraceTime;
+            if (coreLine != null)
+            {
+                coreLine.enabled = false;
+            }
+            if (haloLine != null)
+            {
+                haloLine.enabled = false;
+            }
+            for (int i = 0; i < bolts.Length; i++)
+            {
+                if (bolts[i] != null)
+                {
+                    bolts[i].enabled = false;
+                }
+            }
+            if (glowLight != null)
+            {
+                glowLight.intensity = 0f;
+            }
+        }
+
+        private void FinishNow()
+        {
+            finishing = false;
+            if (autoDestroy)
+            {
+                Destroy(gameObject);
+            }
+            else
+            {
+                gameObject.SetActive(false);
+            }
         }
 
         private float Noise(float speed, float offset)
@@ -204,7 +271,7 @@ namespace BeyondSpiderAssembly
             }
             for (int i = 0; i < bolts.Length; i++)
             {
-                RebuildBolt(bolts[i], i == 0 ? 0f : Mathf.PI, glow, widthNoise);
+                RebuildBolt(bolts[i], i * (2f * Mathf.PI / bolts.Length), glow, widthNoise);
             }
             if (glowLight != null)
             {
@@ -255,7 +322,7 @@ namespace BeyondSpiderAssembly
             }
             float width = baseWidth * BoltWidthFactor * widthNoise;
             bolt.SetWidth(width, width);
-            bolt.SetColors(boltColor * glow, boltColor * glow * 0.6f);
+            bolt.SetColors(boltColor * glow * BoltGlowBoost, boltColor * glow * BoltGlowBoost * BoltTailFade);
         }
 
         private void EmitSheathMotes()
@@ -307,8 +374,10 @@ namespace BeyondSpiderAssembly
         {
             coreLine = CreateLine("Core");
             haloLine = CreateLine("Halo");
-            bolts[0] = CreateLine("Bolt0");
-            bolts[1] = CreateLine("Bolt1");
+            for (int i = 0; i < bolts.Length; i++)
+            {
+                bolts[i] = CreateLine("Bolt" + i);
+            }
 
             GameObject sheathObject = new GameObject("Sheath");
             sheathObject.transform.SetParent(transform);
@@ -360,10 +429,26 @@ namespace BeyondSpiderAssembly
     // a surface being burned.
     internal static class LaserImpactFx
     {
-        // 完整装甲：整束沿 Vector3.Reflect 弹出去。Purely visual — the energy split is already
-        // settled by ApplyLaserDamage, so the reflected beam deals no damage; its brightness is
-        // the armor's actual reflectivity, and it is trimmed by a raycast so it can't lance
-        // through whatever stands in the reflected path.
+        // A clean mirror bounce reads as flat, so intact armor also kicks off a handful of
+        // dimmer, off-axis scatter beams — the coating isn't a perfect mirror, and the extra
+        // clutter is what makes the reflection read as an impact instead of a hallway trick.
+        private const int MinScatterBeams = 3;
+        private const int MaxScatterBeams = 4;
+        private const float ScatterConeAngleDeg = 30f;
+        private const float ScatterWidthMin = 0.25f;
+        private const float ScatterWidthMax = 0.45f;
+        private const float ScatterIntensityMin = 0.2f;
+        private const float ScatterIntensityMax = 0.45f;
+        private const float ScatterLengthMin = 0.25f;
+        private const float ScatterLengthMax = 0.55f;
+        private const float ScatterDurationMin = 0.6f;
+        private const float ScatterDurationMax = 0.9f;
+
+        // 完整装甲：整束沿 Vector3.Reflect 弹出去，再概率性崩出 3-4 条较弱的散射光束。Purely
+        // visual — the energy split is already settled by ApplyLaserDamage, so none of these
+        // reflected/scattered beams deal damage; the primary beam's brightness is the armor's
+        // actual reflectivity, and every beam is trimmed by its own raycast so it can't lance
+        // through whatever stands in its path.
         public static void PlayReflection(Vector3 hitPoint, Vector3 incomingDir, Vector3 normal, float width,
             Color core, Color edge, Color bolt, float maxLength, float visibleTime, float reflectivity)
         {
@@ -371,29 +456,61 @@ namespace BeyondSpiderAssembly
             // Lift the origin off the surface so the trim raycast can't re-hit the very collider
             // the beam just bounced from.
             Vector3 origin = hitPoint + normal * 0.05f;
+
+            SpawnReflectedBeam(origin, reflectDir, width * 0.8f, core, edge, bolt, maxLength, visibleTime,
+                Mathf.Clamp01(reflectivity));
+
+            int scatterCount = Random.Range(MinScatterBeams, MaxScatterBeams + 1);
+            for (int i = 0; i < scatterCount; i++)
+            {
+                Vector3 scatterDir = JitterDirection(reflectDir, ScatterConeAngleDeg);
+                float scatterWidth = width * Random.Range(ScatterWidthMin, ScatterWidthMax);
+                float scatterReflectivity = reflectivity * Random.Range(ScatterIntensityMin, ScatterIntensityMax);
+                float scatterLength = Mathf.Max(width, maxLength * Random.Range(ScatterLengthMin, ScatterLengthMax));
+                float scatterVisible = visibleTime * Random.Range(ScatterDurationMin, ScatterDurationMax);
+                SpawnReflectedBeam(origin, scatterDir, scatterWidth, core, edge, bolt, scatterLength, scatterVisible,
+                    Mathf.Clamp01(scatterReflectivity));
+            }
+        }
+
+        private static void SpawnReflectedBeam(Vector3 origin, Vector3 direction, float width, Color core, Color edge,
+            Color bolt, float maxLength, float visibleTime, float reflectivity)
+        {
             float length = Mathf.Max(5f, maxLength);
             RaycastHit obstruction;
-            if (Physics.Raycast(origin, reflectDir, out obstruction, length))
+            if (Physics.Raycast(origin, direction, out obstruction, length))
             {
                 length = obstruction.distance;
             }
-            LaserBeamFx fx = LaserBeamFx.Create(null, "BS Laser Reflection", width * 0.8f, core, edge, bolt, true);
-            fx.Show(origin, origin + reflectDir * length, visibleTime, Mathf.Clamp01(reflectivity));
+            LaserBeamFx fx = LaserBeamFx.Create(null, "BS Laser Reflection", width, core, edge, bolt, true);
+            fx.Show(origin, origin + direction * length, visibleTime, reflectivity);
+        }
+
+        // Rotates dir by a random angle up to maxAngleDeg around a random axis perpendicular to
+        // it — a cheap cone jitter, good enough for cosmetic scatter beams.
+        private static Vector3 JitterDirection(Vector3 dir, float maxAngleDeg)
+        {
+            Vector3 axis = Vector3.Cross(dir, Random.onUnitSphere);
+            if (axis.sqrMagnitude < 0.0001f)
+            {
+                axis = Vector3.Cross(dir, Vector3.up);
+            }
+            axis.Normalize();
+            float angle = Random.Range(0f, maxAngleDeg);
+            return Quaternion.AngleAxis(angle, axis) * dir;
         }
 
         // 不完整装甲：命中点火花不停四溅。One pulse spawns one short-lived emitter; at the lance's
         // fastest reload the emitters of consecutive pulses overlap, so sustained fire reads as a
-        // continuous shower. Parented to the struck block so the shower rides the moving hull.
+        // continuous shower. Tracks the struck block's transform each frame instead of being
+        // parented to it — if the block breaks and is destroyed mid-shower, Unity would otherwise
+        // destroy this child with it and cut the sparks off mid-animation.
         public static void PlayArmorSparks(Vector3 point, Vector3 normal, Transform follow, float apertureMm)
         {
             GameObject go = new GameObject("BS Laser Armor Sparks");
             go.transform.position = point;
             go.transform.rotation = Quaternion.LookRotation(normal);
-            if (follow != null)
-            {
-                go.transform.SetParent(follow, true);
-            }
-            go.AddComponent<LaserSparkFx>().Init(apertureMm);
+            go.AddComponent<LaserSparkFx>().Init(apertureMm, follow);
         }
     }
 
@@ -419,10 +536,24 @@ namespace BeyondSpiderAssembly
         private float emitTimer;
         private float emitCarry;
 
-        public void Init(float apertureMm)
+        // Followed by offset rather than by Transform.SetParent, so a mid-shower Destroy() of the
+        // struck block (armor breaking) doesn't cascade-destroy this emitter too — once follow
+        // goes null (Unity's fake-null for a destroyed object), the shower just keeps playing at
+        // its last known position instead of vanishing.
+        private Transform follow;
+        private Vector3 followLocalOffset;
+        private Quaternion followLocalRotOffset;
+
+        public void Init(float apertureMm, Transform followTransform)
         {
             sparksPerSecond = Mathf.Clamp(apertureMm * 0.9f, 90f, 360f);
             emitTimer = EmitSeconds;
+            follow = followTransform;
+            if (follow != null)
+            {
+                followLocalOffset = follow.InverseTransformPoint(transform.position);
+                followLocalRotOffset = Quaternion.Inverse(follow.rotation) * transform.rotation;
+            }
             Build();
             // Outlive the last spark's lifetime, then clean up.
             Destroy(gameObject, EmitSeconds + 1f);
@@ -430,6 +561,12 @@ namespace BeyondSpiderAssembly
 
         private void Update()
         {
+            if (follow != null)
+            {
+                transform.position = follow.TransformPoint(followLocalOffset);
+                transform.rotation = follow.rotation * followLocalRotOffset;
+            }
+
             if (sparks == null || emitTimer <= 0f)
             {
                 if (flashLight != null)

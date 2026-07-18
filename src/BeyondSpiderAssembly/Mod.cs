@@ -29,6 +29,8 @@ namespace BeyondSpiderAssembly
 			ModNetworking.Callbacks[SpaceFlakTurretNet.ShotMsg] += SpaceFlakTurretNet.Instance.ShotReceiver;
 			ModNetworking.Callbacks[SpaceGunnerNet.ActiveMsg] += SpaceGunnerNet.Instance.ActiveReceiver;
 			ModNetworking.Callbacks[CaptainLockNet.LockMsg] += CaptainLockNet.Instance.LockReceiver;
+			ModNetworking.Callbacks[CaptainLockNet.FilterMsg] += CaptainLockNet.Instance.FilterReceiver;
+			ModNetworking.Callbacks[CaptainLockNet.Channel0ListMsg] += CaptainLockNet.Instance.Channel0ListReceiver;
 			ModNetworking.Callbacks[MissileLauncherNet.SpawnMsg] += MissileLauncherNet.Instance.SpawnReceiver;
 			Debug.Log("BeyondSpider Space Combat loaded.");
 		}

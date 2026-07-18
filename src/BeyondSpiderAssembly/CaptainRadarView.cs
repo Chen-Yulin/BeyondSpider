@@ -21,18 +21,18 @@ namespace BeyondSpiderAssembly
         private const float DisplayRadius = 4f;
         private const int RingCount = 4;
         private const int SegmentCount = 64;
-        private const float MarkerColliderRadius = 0.3f;
         private const float MarkerScale = 0.3f;
         // Missile blips are sized per size-tier rather than literally by physical Radius — the three
         // tiers' radii (3/5/10, see MissileLauncherAssets.MissileRadius) don't read as a clean visual
         // progression on the tiny radar display, so heavy/medium/small markers instead sit in a fixed
-        // 5:2:1 ratio. Thresholds sit at the midpoints between those three radii so a track still
-        // classifies correctly if that table gets retuned a little.
-        private const float MissileMarkerSmallMaxRadius = 4f;
-        private const float MissileMarkerMediumMaxRadius = 7.5f;
+        // 5:2:1 ratio. Which tier a track falls in is RadarFilter's call (it has to agree with the
+        // filter bar's rows), this is only how big each tier draws.
         private const float MissileMarkerHeavyFactor = 1.25f;
         private const float MissileMarkerMediumFactor = 0.5f;
         private const float MissileMarkerSmallFactor = 0.25f;
+        // Big (>=76mm) cannon shells, shown only while the SHL filter row is on — the smallest
+        // dot on the display, under even a small missile.
+        private const float ShellMarkerFactor = 0.2f;
         // Lock reticle size as a multiple of the locked marker's scale — >1 so it always encircles the
         // blip. 1.7 reproduces the old fixed 0.5 reticle for a default 0.3 marker while growing for big ones.
         private const float LockIconMarkerScaleRatio = 1.7f;
@@ -74,6 +74,36 @@ namespace BeyondSpiderAssembly
         // target locked by several channels shows concentric colored rings instead of one quad
         // z-fighting another.
         private const float LockIconChannelScaleStep = 0.22f;
+        // Per-rank alpha falloff for channel 0's multi-lock reticles (ADR-0014): rank 0 full,
+        // rank 3 at 1 - 3*step of the channel alpha.
+        private const float Channel0RankAlphaStep = 0.18f;
+        // 雷达筛选 bar (ADR-0013), drawn just above the panel's top edge: one button per
+        // RadarFilter category, tinted with the ACTIVE channel's color because the mask it edits
+        // belongs to that channel alone. Unchecking a row hides those contacts and bars the
+        // channel from locking them.
+        private const float FilterButtonWidth = 62f;
+        private const float FilterButtonHeight = 20f;
+        private const float FilterButtonGap = 4f;
+        private const float FilterBarGap = 6f;
+        // How far off a blip a click may land and still lock it, in radar-texture pixels (the
+        // texture is RadarTextureSize across, drawn into a PanelSize-wide rect, so this is a
+        // slightly smaller radius in screen pixels). A marker's own on-screen footprint is far too
+        // small to demand a direct hit — a small missile's blip draws at MarkerScale * 0.25 and is
+        // a couple of pixels wide — so the click takes the NEAREST lockable blip within this
+        // radius instead. Nearest-wins means a generous radius still resolves a tight cluster.
+        private const float ClickGrabRadiusPixels = 30f;
+        // Every blip drops a white plumb line to the radar plane, so its height reads off the grid
+        // instead of being guesswork on an orbiting 3D display; a locked blip thickens its line and
+        // extends it along the plane back to the origin, fixing the target's bearing as well.
+        private const float DropLineWidth = 0.015f;
+        private const float DropLineLockedWidth = 0.045f;
+        private const float DropLineAlpha = 0.4f;
+        private const float DropLineLockedAlpha = 0.85f;
+        // Blip interpolation: a blip dead-reckons along its own track velocity every frame and is
+        // pulled toward the latest scan at this rate (1/s). Dead reckoning is what removes the lag
+        // — smoothing alone would trail a fast contact by velocity/rate — so this only has to
+        // absorb the small step each new scan brings.
+        private const float BlipSmoothingRate = 12f;
 
         public bool IsOpen;
         public float MetersPerUnit = 50f;
@@ -101,6 +131,8 @@ namespace BeyondSpiderAssembly
         private float guardedCameraOrthographicSize;
         private Material markerMaterial;
         private readonly GameObject[] lockIcons = new GameObject[FireChannels.Count];
+        // Channel-0 multi-lock reticles (ADR-0014): one quad per threat-list slot.
+        private readonly GameObject[] channel0Icons = new GameObject[FireChannels.Channel0MaxTargets];
         private int activeChannel;
         private GUIStyle tabLabelStyle;
         private Mesh arrowMesh;
@@ -118,10 +150,32 @@ namespace BeyondSpiderAssembly
         private Toggle radarHeaderToggle;
         private Text radarHeaderText;
 
+        // Everything the screen keeps per contact between frames. Marker and DropLine are on loan
+        // from the pools below and go back the moment the contact stops being drawn (it died, left
+        // sensor range, or the active channel's filter now hides it); the record itself is minted
+        // fresh each time a contact reappears, which is exactly when the smoothed position must
+        // snap rather than slide in from wherever the recycled marker last sat.
+        private sealed class Blip
+        {
+            public GameObject Marker;
+            // Non-null if and only if this blip currently owns an ACTIVE plumb line: rented on
+            // first use by UpdateDropLine, handed back by ReleaseDropLine. Both halves matter,
+            // because a line is "free" precisely when it is inactive — renting one up front would
+            // hand it straight back to the pool for the next contact to rent out from under this
+            // blip, and holding the reference after deactivating it lets this blip scribble on
+            // whoever rented it next. A blip may own a line at some times and not others: a core
+            // draws one as a foreign contact and none once the HUD switches to its own ship.
+            public LineRenderer DropLine;
+            // Smoothed WORLD position. Kept in world space, not display space, so that ship
+            // rotation and zoom stay exact and instant — only the contact's own motion is smoothed.
+            public Vector3 World;
+            public bool Fresh = true;
+        }
+
         private readonly List<GameObject> arrowPool = new List<GameObject>();
         private readonly List<GameObject> spherePool = new List<GameObject>();
-        private readonly Dictionary<GameObject, ITrackable> markerToTrackable = new Dictionary<GameObject, ITrackable>();
-        private readonly Dictionary<ITrackable, GameObject> activeMarkers = new Dictionary<ITrackable, GameObject>();
+        private readonly List<LineRenderer> dropLinePool = new List<LineRenderer>();
+        private readonly Dictionary<ITrackable, Blip> blips = new Dictionary<ITrackable, Blip>();
         private readonly HashSet<ITrackable> seen = new HashSet<ITrackable>();
         private readonly List<ITrackable> stale = new List<ITrackable>();
 
@@ -402,23 +456,34 @@ namespace BeyondSpiderAssembly
             framePixel.Apply();
         }
 
-        // One reticle quad per fire channel, tinted with the channel's color every frame in
-        // SyncMarkers (active channel bright, others dimmed).
+        // One reticle quad per single-lock channel (1-3) plus one per channel-0 threat slot
+        // (ADR-0014 multi-lock: channel 0 rings up to Channel0MaxTargets contacts at once), all
+        // tinted with their channel's color every frame in SyncMarkers. lockIcons[0] stays null
+        // — channel 0 draws exclusively through channel0Icons.
         private void BuildLockIcons()
         {
-            for (int channel = 0; channel < FireChannels.Count; channel++)
+            for (int channel = 1; channel < FireChannels.Count; channel++)
             {
-                GameObject icon = GameObject.CreatePrimitive(PrimitiveType.Quad);
-                icon.name = "BS Radar Lock Icon " + channel;
-                Object.DestroyImmediate(icon.GetComponent<Collider>());
-                icon.transform.SetParent(pocketRoot, false);
-                icon.transform.localScale = Vector3.one * 0.5f;
-                MeshRenderer renderer = icon.GetComponent<MeshRenderer>();
-                renderer.material = new Material(Shader.Find("Particles/Additive"));
-                renderer.material.mainTexture = ModResource.GetTexture("BS Migrated AA Lock Texture").Texture;
-                icon.SetActive(false);
-                lockIcons[channel] = icon;
+                lockIcons[channel] = CreateLockIcon("BS Radar Lock Icon " + channel);
             }
+            for (int slot = 0; slot < channel0Icons.Length; slot++)
+            {
+                channel0Icons[slot] = CreateLockIcon("BS Radar Ch0 Lock Icon " + slot);
+            }
+        }
+
+        private GameObject CreateLockIcon(string name)
+        {
+            GameObject icon = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            icon.name = name;
+            Object.DestroyImmediate(icon.GetComponent<Collider>());
+            icon.transform.SetParent(pocketRoot, false);
+            icon.transform.localScale = Vector3.one * 0.5f;
+            MeshRenderer renderer = icon.GetComponent<MeshRenderer>();
+            renderer.material = new Material(Shader.Find("Particles/Additive"));
+            renderer.material.mainTexture = ModResource.GetTexture("BS Migrated AA Lock Texture").Texture;
+            icon.SetActive(false);
+            return icon;
         }
 
         private static Mesh BuildArrowMesh()
@@ -472,6 +537,9 @@ namespace BeyondSpiderAssembly
             }
         }
 
+        // No collider: clicks are resolved by projecting each drawn blip into the radar camera and
+        // taking the nearest one to the click (FindLockableTarget), not by raycasting the pocket
+        // scene, so nothing here needs to be hittable.
         private GameObject CreateMarker(TrackKind kind)
         {
             GameObject marker;
@@ -493,10 +561,31 @@ namespace BeyondSpiderAssembly
 
             marker.transform.SetParent(pocketRoot, false);
             marker.transform.localScale = Vector3.one * MarkerScale;
-            SphereCollider collider = marker.AddComponent<SphereCollider>();
-            collider.radius = MarkerColliderRadius;
             marker.SetActive(false);
             return marker;
+        }
+
+        // Sits at pocketRoot's own origin with an identity transform, so useWorldSpace = false lets
+        // SetPosition take the very same radar-space coordinates the markers use. A LineRenderer
+        // (rather than a mesh) because it billboards toward the camera on its own — the radar
+        // camera orbits, and a flat quad would vanish edge-on.
+        private LineRenderer CreateDropLine()
+        {
+            GameObject lineObject = new GameObject("BS Radar Drop Line");
+            lineObject.transform.SetParent(pocketRoot, false);
+            lineObject.transform.localPosition = Vector3.zero;
+            lineObject.transform.localRotation = Quaternion.identity;
+            lineObject.transform.localScale = Vector3.one;
+
+            LineRenderer line = lineObject.AddComponent<LineRenderer>();
+            line.material = new Material(Shader.Find("Particles/Additive"));
+            // Additive shaders multiply vertex color by _TintColor, which defaults to mid-grey and
+            // would halve every width/alpha chosen below; white here leaves SetColors in charge.
+            line.material.SetColor("_TintColor", Color.white);
+            line.useWorldSpace = false;
+            line.SetVertexCount(2);
+            lineObject.SetActive(false);
+            return line;
         }
 
         // The radar always shows the ACTIVE local ship — whichever of the local player's ships
@@ -506,55 +595,92 @@ namespace BeyondSpiderAssembly
             return SpaceCombatRegistry.ActiveLocalShip;
         }
 
-        private GameObject GetOrCreateMarker(ITrackable target, TrackKind kind)
+        // Pool "in use" is tracked by activeSelf alone (releases below just SetActive(false)), the
+        // same bookkeeping the marker pools have always used.
+        private Blip GetOrCreateBlip(ITrackable target, TrackKind kind)
         {
-            GameObject marker;
-            if (activeMarkers.TryGetValue(target, out marker))
+            Blip blip;
+            if (blips.TryGetValue(target, out blip))
             {
-                return marker;
+                return blip;
             }
 
+            blip = new Blip();
+            blip.Marker = RentMarker(kind);
+            blips[target] = blip;
+            return blip;
+        }
+
+        private GameObject RentMarker(TrackKind kind)
+        {
             List<GameObject> pool = kind == TrackKind.Ship ? arrowPool : spherePool;
             for (int i = 0; i < pool.Count; i++)
             {
-                GameObject pooled = pool[i];
-                if (!pooled.activeSelf)
+                if (!pool[i].activeSelf)
                 {
-                    markerToTrackable[pooled] = target;
-                    activeMarkers[target] = pooled;
-                    return pooled;
+                    return pool[i];
                 }
             }
 
             GameObject created = CreateMarker(kind);
             pool.Add(created);
-            markerToTrackable[created] = target;
-            activeMarkers[target] = created;
             return created;
+        }
+
+        private LineRenderer RentDropLine()
+        {
+            for (int i = 0; i < dropLinePool.Count; i++)
+            {
+                if (!dropLinePool[i].gameObject.activeSelf)
+                {
+                    return dropLinePool[i];
+                }
+            }
+
+            LineRenderer created = CreateDropLine();
+            dropLinePool.Add(created);
+            return created;
+        }
+
+        // Hands a blip's plumb line back to the pool. Dropping the reference is not optional: a
+        // line counts as free exactly when it is inactive, so a blip that kept pointing at one it
+        // had deactivated could later write to — or switch off — a line some other contact has
+        // since rented. Hence the invariant DropLine upholds: non-null if and only if this blip
+        // currently owns an active line.
+        private static void ReleaseDropLine(Blip blip)
+        {
+            if (blip.DropLine == null)
+            {
+                return;
+            }
+            blip.DropLine.gameObject.SetActive(false);
+            blip.DropLine = null;
+        }
+
+        private static void ReleaseBlip(Blip blip)
+        {
+            blip.Marker.SetActive(false);
+            ReleaseDropLine(blip);
         }
 
         private void HideAllMarkers()
         {
-            for (int i = 0; i < arrowPool.Count; i++)
+            foreach (KeyValuePair<ITrackable, Blip> pair in blips)
             {
-                arrowPool[i].SetActive(false);
+                ReleaseBlip(pair.Value);
             }
-            for (int i = 0; i < spherePool.Count; i++)
-            {
-                spherePool[i].SetActive(false);
-            }
-            activeMarkers.Clear();
+            blips.Clear();
             for (int channel = 0; channel < lockIcons.Length; channel++)
             {
-                lockIcons[channel].SetActive(false);
+                if (lockIcons[channel] != null)
+                {
+                    lockIcons[channel].SetActive(false);
+                }
             }
-        }
-
-        public ITrackable TrackableFor(GameObject marker)
-        {
-            ITrackable target;
-            markerToTrackable.TryGetValue(marker, out target);
-            return target;
+            for (int slot = 0; slot < channel0Icons.Length; slot++)
+            {
+                channel0Icons[slot].SetActive(false);
+            }
         }
 
         // Snaps the continuous, scroll-driven MetersPerUnit to the nearest "nice" ring step from
@@ -601,20 +727,88 @@ namespace BeyondSpiderAssembly
             return new Vector3(radarDirection.x, 0f, radarDirection.z);
         }
 
-        // Ship markers stay a fixed size; a missile marker is sized by tier so the three missile sizes
-        // show up as distinctly-sized dots. Only HeavyMissile tracks reach here besides ships (the
-        // radar draws no other kind), so anything else falls back to MarkerScale.
-        private static float MarkerScaleFor(SensorTrack track)
+        // Ship markers stay a fixed size; a missile marker is sized by tier so the three missile
+        // sizes show up as distinctly-sized dots. Anything RadarFilter can't categorize never gets
+        // drawn at all, so it only falls back to MarkerScale defensively.
+        private static float MarkerScaleFor(ITrackable target)
         {
-            if (track.Kind != TrackKind.HeavyMissile || track.Target == null)
+            RadarCategory category;
+            if (!RadarFilter.TryGetCategory(target, out category))
             {
                 return MarkerScale;
             }
-            float radius = track.Target.Radius;
-            float factor = radius < MissileMarkerSmallMaxRadius ? MissileMarkerSmallFactor
-                : radius < MissileMarkerMediumMaxRadius ? MissileMarkerMediumFactor
-                : MissileMarkerHeavyFactor;
-            return MarkerScale * factor;
+
+            switch (category)
+            {
+                case RadarCategory.HeavyMissile:
+                    return MarkerScale * MissileMarkerHeavyFactor;
+                case RadarCategory.MediumMissile:
+                    return MarkerScale * MissileMarkerMediumFactor;
+                case RadarCategory.SmallMissile:
+                    return MarkerScale * MissileMarkerSmallFactor;
+                case RadarCategory.Shell:
+                    return MarkerScale * ShellMarkerFactor;
+                default:
+                    return MarkerScale;
+            }
+        }
+
+        // Where a blip should be RIGHT NOW in world space, given that its track is up to one scan
+        // interval old: dead-reckon along the track's own velocity for the age of the record, then
+        // ease out whatever error the newest scan revealed. Advancing by velocity is what keeps
+        // this lag-free — easing alone would leave a fast contact trailing its true position by
+        // velocity/BlipSmoothingRate — so the ease only ever has a scan-sized step to absorb.
+        private static void AdvanceBlip(Blip blip, SensorTrack track)
+        {
+            Vector3 predicted = track.Position + track.Velocity * Mathf.Max(0f, Time.time - track.ScanTime);
+            if (blip.Fresh)
+            {
+                blip.World = predicted;
+                blip.Fresh = false;
+                return;
+            }
+
+            blip.World += track.Velocity * Time.deltaTime;
+            blip.World = Vector3.Lerp(blip.World, predicted, 1f - Mathf.Exp(-BlipSmoothingRate * Time.deltaTime));
+        }
+
+        private Vector3 ToDisplaySpace(Transform captain, Vector3 world)
+        {
+            Vector3 relative = CaptainLocalToRadarSpace(captain.InverseTransformVector(world - captain.position));
+            Vector3 displayPos = relative / MetersPerUnit;
+            if (displayPos.magnitude > DisplayRadius)
+            {
+                displayPos = displayPos.normalized * DisplayRadius;
+            }
+            return displayPos;
+        }
+
+        // The plumb line down to the radar plane, plus — once locked — a leg from that foot back to
+        // the origin. One polyline does both: marker -> foot -> origin, so the corner at the foot
+        // is where height stops being read and bearing starts.
+        private void UpdateDropLine(Blip blip, Vector3 displayPos, bool locked)
+        {
+            if (blip.DropLine == null)
+            {
+                blip.DropLine = RentDropLine();
+            }
+
+            LineRenderer line = blip.DropLine;
+            line.gameObject.SetActive(true);
+
+            Vector3 foot = new Vector3(displayPos.x, 0f, displayPos.z);
+            float width = locked ? DropLineLockedWidth : DropLineWidth;
+            Color color = new Color(1f, 1f, 1f, locked ? DropLineLockedAlpha : DropLineAlpha);
+
+            line.SetVertexCount(locked ? 3 : 2);
+            line.SetPosition(0, displayPos);
+            line.SetPosition(1, foot);
+            if (locked)
+            {
+                line.SetPosition(2, Vector3.zero);
+            }
+            line.SetWidth(width, width);
+            line.SetColors(color, color);
         }
 
         private void SyncMarkers()
@@ -627,97 +821,136 @@ namespace BeyondSpiderAssembly
             }
 
             Transform captain = ship.Captain.transform;
+            // The ACTIVE channel's filter decides what the screen shows, which is also what makes
+            // "only what you can see is lockable" fall out for free: a click can only ever pick
+            // from the blips drawn here, and it locks the very channel whose filter drew them.
+            int filter = ship.ChannelFilters[activeChannel];
             seen.Clear();
 
             if (ship.Core != null)
             {
                 seen.Add(ship.Core);
-                GameObject selfMarker = GetOrCreateMarker(ship.Core, TrackKind.Ship);
-                selfMarker.SetActive(true);
-                selfMarker.transform.localPosition = Vector3.zero;
-                selfMarker.transform.localRotation = Quaternion.identity;
-                selfMarker.transform.localScale = Vector3.one * MarkerScale * OriginMarkerScale;
-                SetRendererColor(selfMarker.GetComponent<Renderer>(), Color.green);
+                Blip self = GetOrCreateBlip(ship.Core, TrackKind.Ship);
+                self.Marker.SetActive(true);
+                self.Marker.transform.localPosition = Vector3.zero;
+                self.Marker.transform.localRotation = Quaternion.identity;
+                self.Marker.transform.localScale = Vector3.one * MarkerScale * OriginMarkerScale;
+                SetRendererColor(self.Marker.GetComponent<Renderer>(), Color.green);
+                // No plumb line: own hull sits on the origin, so it would have nowhere to drop.
+                // This has to actively release rather than just skip drawing — blips outlive a
+                // change of viewed ship, and THIS core was a foreign contact with a line of its own
+                // right up until the HUD switched to it (ADR-0011 multi-ship: a sister ship is an
+                // ordinary contact on the other's radar). That line would otherwise stay lit,
+                // frozen where the previous ship's radar last put it.
+                ReleaseDropLine(self);
             }
 
             for (int i = 0; i < ship.Tracks.Count; i++)
             {
                 SensorTrack track = ship.Tracks[i];
-                if (track.Kind != TrackKind.Ship && track.Kind != TrackKind.HeavyMissile)
+                if (track.Kind != TrackKind.Ship && track.Kind != TrackKind.HeavyMissile
+                    && track.Kind != TrackKind.LargeProjectile)
+                {
+                    continue;
+                }
+                // Shows() also owns the shell rules: only >=76mm shells have a category at all,
+                // and the SHL row (default off) decides whether those draw.
+                if (!RadarFilter.Shows(filter, track.Target))
+                {
+                    continue;
+                }
+                // Add() answering false means some earlier track already claimed this contact this
+                // frame — two radars whose cones overlap both report it. Drawing it once is merely
+                // redundant, but advancing its interpolation twice would double-step the blip.
+                if (!seen.Add(track.Target))
                 {
                     continue;
                 }
 
-                seen.Add(track.Target);
-                GameObject marker = GetOrCreateMarker(track.Target, track.Kind);
-                marker.SetActive(true);
-                marker.transform.localScale = Vector3.one * MarkerScaleFor(track);
+                Blip blip = GetOrCreateBlip(track.Target, track.Kind);
+                AdvanceBlip(blip, track);
 
-                Vector3 relative = CaptainLocalToRadarSpace(captain.InverseTransformVector(track.Position - captain.position));
-                Vector3 displayPos = relative / MetersPerUnit;
-                if (displayPos.magnitude > DisplayRadius)
-                {
-                    displayPos = displayPos.normalized * DisplayRadius;
-                }
-                marker.transform.localPosition = displayPos;
+                Vector3 displayPos = ToDisplaySpace(captain, blip.World);
+                blip.Marker.SetActive(true);
+                blip.Marker.transform.localScale = Vector3.one * MarkerScaleFor(track.Target);
+                blip.Marker.transform.localPosition = displayPos;
 
                 if (track.Kind == TrackKind.Ship)
                 {
                     Vector3 velLocal = ProjectDirectionToRadarPlane(CaptainLocalToRadarSpace(captain.InverseTransformDirection(track.Velocity)));
-                    marker.transform.localRotation = velLocal.sqrMagnitude > 0.01f
+                    blip.Marker.transform.localRotation = velLocal.sqrMagnitude > 0.01f
                         ? Quaternion.LookRotation(velLocal.normalized, Vector3.up)
                         : Quaternion.identity;
                 }
 
                 Color color = SpaceBallistics.IsHostile(ship.Captain, track.Target) ? Color.red : Color.green;
-                SetRendererColor(marker.GetComponent<Renderer>(), color);
+                SetRendererColor(blip.Marker.GetComponent<Renderer>(), color);
+                UpdateDropLine(blip, displayPos, FireChannels.IsChannelTarget(ship, track.Target));
             }
 
             stale.Clear();
-            foreach (KeyValuePair<ITrackable, GameObject> pair in activeMarkers)
+            foreach (KeyValuePair<ITrackable, Blip> pair in blips)
             {
                 if (!seen.Contains(pair.Key))
                 {
-                    pair.Value.SetActive(false);
+                    ReleaseBlip(pair.Value);
                     stale.Add(pair.Key);
                 }
             }
             for (int i = 0; i < stale.Count; i++)
             {
-                activeMarkers.Remove(stale[i]);
+                blips.Remove(stale[i]);
             }
 
             // One reticle per fire channel, in the channel's color: the active tab's lock draws
             // bright, the other channels' locks stay visible but dimmed, so the player always
-            // sees the whole fire-control picture regardless of which tab is selected.
-            for (int channel = 0; channel < FireChannels.Count; channel++)
+            // sees the whole fire-control picture regardless of which tab is selected. A channel
+            // whose lock the ACTIVE channel's filter hides has no blip to ring, so its reticle
+            // drops out until that row is checked again — a lock is still a lock, just not drawn.
+            // Channel 0 is the multi-lock air-defence channel (ADR-0014): it rings its WHOLE
+            // threat list, rank 0 at full channel alpha, lower ranks progressively dimmer.
+            for (int channel = 1; channel < FireChannels.Count; channel++)
             {
-                GameObject icon = lockIcons[channel];
-                ITrackable target = ship.ChannelTargets[channel];
-                GameObject lockedMarker;
-                if (target == null || !target.IsAlive || !activeMarkers.TryGetValue(target, out lockedMarker))
-                {
-                    icon.SetActive(false);
-                    continue;
-                }
-
-                icon.SetActive(true);
-                icon.transform.localPosition = lockedMarker.transform.localPosition;
-                // Size the reticle to the locked marker so it always frames the blip. A fixed size was
-                // smaller than a scaled-up heavy-missile dot and vanished behind it; scaling a bit larger
-                // than the marker keeps the reticle encircling whatever it's locked onto, big or small.
-                // Higher channels ring slightly wider so several locks on one blip nest concentrically.
-                float ratio = LockIconMarkerScaleRatio * (1f + LockIconChannelScaleStep * channel);
-                icon.transform.localScale = Vector3.one * (lockedMarker.transform.localScale.x * ratio);
-                // Billboard toward the orbiting radar camera every frame — the quad's own rotation
-                // never changes otherwise, so it would render edge-on/backwards once the player
-                // orbits away from whatever angle it happened to be built facing.
-                icon.transform.rotation = radarCamera.transform.rotation;
-
-                Color tint = FireChannels.Colors[channel];
-                tint.a = channel == activeChannel ? ActiveLockIconAlpha : InactiveLockIconAlpha;
-                SetRendererColor(icon.GetComponent<Renderer>(), tint);
+                float alpha = channel == activeChannel ? ActiveLockIconAlpha : InactiveLockIconAlpha;
+                SyncLockIcon(lockIcons[channel], ship.ChannelTargets[channel], channel, alpha);
             }
+            for (int slot = 0; slot < channel0Icons.Length; slot++)
+            {
+                ITrackable target = slot < ship.Channel0Threats.Count ? ship.Channel0Threats[slot] : null;
+                float alpha = activeChannel == 0 ? ActiveLockIconAlpha : InactiveLockIconAlpha;
+                // Rank falloff: rank 0 full strength, each lower rank a step dimmer, so the
+                // radar reads the threat ordering at a glance.
+                alpha *= 1f - Channel0RankAlphaStep * slot;
+                SyncLockIcon(channel0Icons[slot], target, 0, alpha);
+            }
+        }
+
+        private void SyncLockIcon(GameObject icon, ITrackable target, int channel, float alpha)
+        {
+            Blip lockedBlip;
+            if (target == null || !target.IsAlive || !blips.TryGetValue(target, out lockedBlip))
+            {
+                icon.SetActive(false);
+                return;
+            }
+
+            GameObject lockedMarker = lockedBlip.Marker;
+            icon.SetActive(true);
+            icon.transform.localPosition = lockedMarker.transform.localPosition;
+            // Size the reticle to the locked marker so it always frames the blip. A fixed size was
+            // smaller than a scaled-up heavy-missile dot and vanished behind it; scaling a bit larger
+            // than the marker keeps the reticle encircling whatever it's locked onto, big or small.
+            // Higher channels ring slightly wider so several locks on one blip nest concentrically.
+            float ratio = LockIconMarkerScaleRatio * (1f + LockIconChannelScaleStep * channel);
+            icon.transform.localScale = Vector3.one * (lockedMarker.transform.localScale.x * ratio);
+            // Billboard toward the orbiting radar camera every frame — the quad's own rotation
+            // never changes otherwise, so it would render edge-on/backwards once the player
+            // orbits away from whatever angle it happened to be built facing.
+            icon.transform.rotation = radarCamera.transform.rotation;
+
+            Color tint = FireChannels.Colors[channel];
+            tint.a = alpha;
+            SetRendererColor(icon.GetComponent<Renderer>(), tint);
         }
 
         public void SetOpen(bool open)
@@ -751,6 +984,7 @@ namespace BeyondSpiderAssembly
                 orbiting = false;
                 leftDownInRect = false;
                 SetRadarOwnsMouse(false);
+                HideAllMarkers();
             }
             if (radarCamera != null)
             {
@@ -827,6 +1061,10 @@ namespace BeyondSpiderAssembly
                 orbiting = false;
                 leftDownInRect = false;
                 SetRadarOwnsMouse(false);
+                // Drop every blip's interpolation state along with its marker: SyncMarkers stops
+                // running while collapsed, so keeping them would have each blip slide in from
+                // wherever it froze when the panel reopens. Empty means every contact snaps.
+                HideAllMarkers();
             }
         }
 
@@ -936,9 +1174,16 @@ namespace BeyondSpiderAssembly
             }
         }
 
+        // The filter bar hangs outside the panel rect, so every "is the mouse ours?" test has to
+        // cover both — otherwise a click meant for a filter button also swings the game camera.
+        private bool IsInteractivePoint(Rect panelRect, Vector2 point)
+        {
+            return panelRect.Contains(point) || FilterBarRect(panelRect).Contains(point);
+        }
+
         private bool MouseIsOwnedByRadar(Rect rect)
         {
-            return rect.Contains(FlippedMouse()) || orbiting || leftDownInRect;
+            return IsInteractivePoint(rect, FlippedMouse()) || orbiting || leftDownInRect;
         }
 
         private void SetRadarOwnsMouse(bool ownsMouse)
@@ -1070,9 +1315,9 @@ namespace BeyondSpiderAssembly
 
         private void HandleClick(Rect rect)
         {
-            bool overRect = rect.Contains(FlippedMouse());
+            bool overInteractive = IsInteractivePoint(rect, FlippedMouse());
 
-            if (Input.GetMouseButtonDown(0) && overRect)
+            if (Input.GetMouseButtonDown(0) && overInteractive)
             {
                 mouseDownPos = Input.mousePosition;
                 leftDownInRect = true;
@@ -1081,16 +1326,67 @@ namespace BeyondSpiderAssembly
             {
                 bool wasDownInRect = leftDownInRect;
                 leftDownInRect = false;
-                if (wasDownInRect && overRect && Vector2.Distance(mouseDownPos, Input.mousePosition) < ClickPixelThreshold)
+                if (wasDownInRect && overInteractive && Vector2.Distance(mouseDownPos, Input.mousePosition) < ClickPixelThreshold)
                 {
-                    // Tab strip first: a click on a channel tab switches the active channel and
-                    // must not fall through into a lock attempt on whatever blip sits behind it.
-                    if (!TrySelectTabAtMouse(rect))
+                    // Chrome first, in the order it overlays the display: a click on a channel tab
+                    // or a filter button must not also fall through into a lock attempt on whatever
+                    // blip happens to sit behind it. The panel test then stops a click that merely
+                    // landed in a gap between filter buttons — outside the display entirely — from
+                    // still grabbing whatever blip sits nearest the display's top edge.
+                    if (!TrySelectTabAtMouse(rect) && !TryToggleFilterAtMouse(rect) && rect.Contains(FlippedMouse()))
                     {
                         TryLockAtMouse(rect);
                     }
                 }
             }
+        }
+
+        private static Rect FilterBarRect(Rect panelRect)
+        {
+            float width = RadarFilter.Count * FilterButtonWidth + (RadarFilter.Count - 1) * FilterButtonGap;
+            return new Rect(
+                panelRect.x + TabMargin,
+                panelRect.y - FilterBarGap - FilterButtonHeight,
+                width,
+                FilterButtonHeight);
+        }
+
+        private static Rect FilterButtonRect(Rect panelRect, int category)
+        {
+            Rect bar = FilterBarRect(panelRect);
+            return new Rect(
+                bar.x + category * (FilterButtonWidth + FilterButtonGap),
+                bar.y,
+                FilterButtonWidth,
+                FilterButtonHeight);
+        }
+
+        // Toggles one 雷达筛选 row on the ACTIVE channel only — each channel carries its own mask,
+        // so the same bar edits a different configuration per tab. Broadcast because the mask now
+        // gates channel 0's auto air-defence, which the host runs.
+        private bool TryToggleFilterAtMouse(Rect rect)
+        {
+            ShipState ship = OwnShipState();
+            if (ship == null || ship.Captain == null)
+            {
+                return false;
+            }
+
+            Vector2 mouse = FlippedMouse();
+            for (int category = 0; category < RadarFilter.Count; category++)
+            {
+                if (!FilterButtonRect(rect, category).Contains(mouse))
+                {
+                    continue;
+                }
+
+                int mask = RadarFilter.Toggle(ship.ChannelFilters[activeChannel], (RadarCategory)category);
+                ship.ChannelFilters[activeChannel] = mask;
+                ModNetworking.SendToAll(CaptainLockNet.FilterMsg.CreateMessage(
+                    ship.Captain.PlayerID, ship.CoreGuidHash, activeChannel, mask));
+                return true;
+            }
+            return false;
         }
 
         private static Rect TabRect(Rect panelRect, int channel)
@@ -1116,9 +1412,12 @@ namespace BeyondSpiderAssembly
             return false;
         }
 
-        // (Un)locks the clicked blip on the ACTIVE channel. A manual lock on channel 0 pauses
-        // the captain's auto air-defence selection (Channel0ManualLock) until unlocked or the
-        // target dies; unlocking hands the channel back to auto.
+        // (Un)locks the clicked blip on the ACTIVE channel. On channel 0 a click pins the target
+        // as the MANUAL rank-0 threat (手动目标置顶, ADR-0014) — the rest of the threat list
+        // keeps auto-filling around it — and clicking the current manual pin releases it back to
+        // full-auto. On channel 0 the toggle test is therefore "is this already the manual pin",
+        // NOT "is this ChannelTargets[0]": rank 0 usually holds an AUTO pick, and clicking that
+        // blip must pin it, not bounce off as an unlock.
         private void TryLockAtMouse(Rect rect)
         {
             ShipState ship = OwnShipState();
@@ -1130,17 +1429,19 @@ namespace BeyondSpiderAssembly
             Vector2 mouse = FlippedMouse();
             float fracX = (mouse.x - rect.x) / rect.width;
             float fracY = (mouse.y - rect.y) / rect.height;
-            Vector3 rtPoint = new Vector3(fracX * radarCamera.pixelWidth, (1f - fracY) * radarCamera.pixelHeight, 0f);
-            Ray ray = radarCamera.ScreenPointToRay(rtPoint);
+            Vector2 rtPoint = new Vector2(fracX * radarCamera.pixelWidth, (1f - fracY) * radarCamera.pixelHeight);
 
-            ITrackable target = FindLockableTarget(ray, ship);
+            ITrackable target = FindLockableTarget(rtPoint, ship);
             if (target == null)
             {
                 return;
             }
 
             int channel = activeChannel;
-            bool willLock = !ReferenceEquals(ship.ChannelTargets[channel], target);
+            bool alreadyHeld = channel == 0
+                ? ship.Channel0ManualLock && ReferenceEquals(ship.ChannelTargets[0], target)
+                : ReferenceEquals(ship.ChannelTargets[channel], target);
+            bool willLock = !alreadyHeld;
             ship.ChannelTargets[channel] = willLock ? target : null;
             if (channel == 0)
             {
@@ -1151,25 +1452,25 @@ namespace BeyondSpiderAssembly
             ModNetworking.SendToAll(CaptainLockNet.LockMsg.CreateMessage(ship.Captain.PlayerID, ship.CoreGuidHash, channel, target.PlayerID, lockable.GuidHash, willLock, true));
         }
 
-        // A click point can land on more than one overlapping marker collider — e.g. a missile
-        // about to hit its target sits almost exactly on top of the ship it's homing on. A plain
-        // Physics.Raycast only reports the single closest hit, so if that happens to be a target
-        // that can't be locked (our own ship's self marker; anything not ILockable), the click
-        // would silently do nothing even though a lockable target was right behind it. Walk every
-        // hit closest-first and take the nearest one that's actually lockable instead.
-        private ITrackable FindLockableTarget(Ray ray, ShipState ship)
+        // The nearest lockable blip to where the player clicked, measured in the radar camera's
+        // projected pixel space, rather than whatever a ray happened to strike. Demanding a direct
+        // hit made this close to unusable: markers are tiny (a small missile draws at
+        // MarkerScale * 0.25, a couple of pixels across), and a ray that did connect reported only
+        // its closest hit — so a missile riding on top of the ship it's chasing, or the un-lockable
+        // self marker, would swallow the click and silently do nothing. Nearest-within-a-radius
+        // instead: it grabs the blip the player was obviously aiming at, and a dense cluster still
+        // resolves to whichever one is actually closest.
+        //
+        // Only blips currently on screen are candidates, which is what enforces "a channel may lock
+        // only what its own 雷达筛选 shows" (ADR-0013) — SyncMarkers drew exactly the active
+        // channel's filtered set, and this locks that same channel.
+        private ITrackable FindLockableTarget(Vector2 rtPoint, ShipState ship)
         {
-            RaycastHit[] hits = Physics.RaycastAll(ray, 100f);
             ITrackable best = null;
-            float bestDistance = float.MaxValue;
-            for (int i = 0; i < hits.Length; i++)
+            float bestDistance = ClickGrabRadiusPixels;
+            foreach (KeyValuePair<ITrackable, Blip> pair in blips)
             {
-                if (hits[i].distance >= bestDistance)
-                {
-                    continue;
-                }
-
-                ITrackable candidate = TrackableFor(hits[i].collider.gameObject);
+                ITrackable candidate = pair.Key;
                 if (candidate == null || !candidate.IsAlive)
                 {
                     continue;
@@ -1182,9 +1483,25 @@ namespace BeyondSpiderAssembly
                 {
                     continue;
                 }
+                if (!pair.Value.Marker.activeSelf)
+                {
+                    continue;
+                }
+
+                Vector3 projected = radarCamera.WorldToScreenPoint(pair.Value.Marker.transform.position);
+                if (projected.z <= 0f)
+                {
+                    continue;
+                }
+
+                float distance = Vector2.Distance(new Vector2(projected.x, projected.y), rtPoint);
+                if (distance >= bestDistance)
+                {
+                    continue;
+                }
 
                 best = candidate;
-                bestDistance = hits[i].distance;
+                bestDistance = distance;
             }
             return best;
         }
@@ -1206,7 +1523,42 @@ namespace BeyondSpiderAssembly
             DrawRadarTexture(rect);
             DrawPanelFrame(rect);
             DrawChannelTabs(rect);
+            DrawFilterBar(rect);
             DrawRingScaleLabel(rect);
+        }
+
+        // 雷达筛选 bar above the panel's top edge — same IMGUI-drawn, Update()-clicked arrangement
+        // as the channel tabs (see DrawChannelTabs). Tinted with the active channel's color, since
+        // the mask it edits is that channel's alone and switching tabs switches the whole bar.
+        private void DrawFilterBar(Rect rect)
+        {
+            ShipState ship = OwnShipState();
+            if (ship == null)
+            {
+                return;
+            }
+
+            if (tabLabelStyle == null)
+            {
+                tabLabelStyle = new GUIStyle(GUI.skin.label);
+                tabLabelStyle.alignment = TextAnchor.MiddleCenter;
+                tabLabelStyle.fontSize = 12;
+            }
+
+            int mask = ship.ChannelFilters[activeChannel];
+            Color channelColor = FireChannels.Colors[activeChannel];
+            Color previous = GUI.color;
+            for (int category = 0; category < RadarFilter.Count; category++)
+            {
+                Rect button = FilterButtonRect(rect, category);
+                bool enabled = RadarFilter.Contains(mask, (RadarCategory)category);
+
+                GUI.color = new Color(channelColor.r, channelColor.g, channelColor.b, enabled ? 0.85f : 0.25f);
+                GUI.DrawTexture(button, framePixel);
+                GUI.color = enabled ? Color.white : new Color(1f, 1f, 1f, 0.75f);
+                GUI.Label(button, RadarFilter.Labels[category], tabLabelStyle);
+            }
+            GUI.color = previous;
         }
 
         // Fire-channel tab strip along the panel's top-left edge. Pure IMGUI drawing — clicks
@@ -1322,7 +1674,7 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
-            bool overPanel = rect.Contains(evt.mousePosition);
+            bool overPanel = IsInteractivePoint(rect, evt.mousePosition);
             bool activeDrag = orbiting || leftDownInRect;
             if (!overPanel && !activeDrag)
             {

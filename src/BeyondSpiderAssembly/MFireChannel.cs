@@ -40,8 +40,8 @@ namespace BeyondSpiderAssembly
 
     public sealed class FireChannelSelector : CustomSelector<int, MFireChannel>
     {
-        private const float ButtonSpacing = 0.32f;
-        private const float ButtonRowY = -0.16f;
+        private const float ButtonSpacing = 0.4f;
+        private const float ButtonRowY = -0.2f;
         private const float LabelRowY = 0.0f;
         private static readonly Vector2 ButtonSize = new Vector2(0.32f, 0.28f);
 

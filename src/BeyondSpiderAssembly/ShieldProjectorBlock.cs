@@ -17,12 +17,16 @@ namespace BeyondSpiderAssembly
         private const float UpkeepPerVolume = 0.02f;
         private const int RingCount = 10;
         private const int SegmentCount = 32;
-        private const float BaseAlpha = 0.12f;
+        // Idle glow tracks how much of its requested upkeep the shield is actually getting (see
+        // lastUpkeepRatio) — a starved bus visibly dims the field instead of an all-or-nothing cutoff.
+        private const float MinIdleAlpha = 0.05f;
+        private const float MaxIdleAlpha = 0.2f;
         private const float FlashPeakAlpha = 0.35f;
         private const float FlashDecayTime = 0.25f;
 
         private float lastUpkeepRatio;
         private bool interceptedThisTick;
+        private bool active = true;
         // See agent-besiege-mod-guide.md's "注册时序规范" — retried each tick until it
         // succeeds, since ShipState may not exist yet when this OnSimulateStart runs.
         private bool registered;
@@ -41,6 +45,7 @@ namespace BeyondSpiderAssembly
         public MSlider ColorHue;
         public MSlider Height;
         public MToggle AlwaysVisible;
+        public MKey PowerToggle;
 
         public override void SafeAwake()
         {
@@ -52,6 +57,7 @@ namespace BeyondSpiderAssembly
             Strength = AddSlider("Strength", "BSShieldStrength", 1f, 0.2f, 5f);
             ColorHue = AddSlider("Shield Color", "BSShieldColorHue", 0.55f, 0f, 1f);
             AlwaysVisible = AddToggle("Always Show Shield", "BSShieldAlwaysVisible", false);
+            PowerToggle = AddKey("Toggle Shield Power", "BSShieldPower", KeyCode.None);
         }
 
         public override void OnSimulateStart()
@@ -86,6 +92,16 @@ namespace BeyondSpiderAssembly
             }
         }
 
+        // Key is read here (SimulateUpdateHost, not the fixed step) so a tap in between fixed ticks
+        // isn't missed — same convention as the other MKey toggles in this codebase.
+        public override void SimulateUpdateHost()
+        {
+            if (PowerToggle.IsPressed)
+            {
+                active = !active;
+            }
+        }
+
         public override void SimulateFixedUpdateHost()
         {
             ShipState ship = OwnShip();
@@ -96,6 +112,14 @@ namespace BeyondSpiderAssembly
             }
             if (ship == null)
             {
+                return;
+            }
+
+            if (!active)
+            {
+                lastUpkeepRatio = 0f;
+                interceptedThisTick = false;
+                UpdateVisual();
                 return;
             }
 
@@ -320,7 +344,14 @@ namespace BeyondSpiderAssembly
                 flashLevel = 1f;
             }
 
-            float baseAlpha = AlwaysVisible.IsActive ? BaseAlpha * lastUpkeepRatio : 0f;
+            if (!active)
+            {
+                flashLevel = 0f;
+                visRenderer.enabled = false;
+                return;
+            }
+
+            float baseAlpha = AlwaysVisible.IsActive ? Mathf.Lerp(MinIdleAlpha, MaxIdleAlpha, lastUpkeepRatio) : 0f;
             float intensity = Mathf.Clamp01(baseAlpha + FlashPeakAlpha * flashLevel);
             Color hueColor = Color.HSVToRGB(ColorHue.Value, 1f, 1f);
             // Particles/Additive reads _TintColor (not the standard _Color that .material.color sets);

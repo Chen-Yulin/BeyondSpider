@@ -151,6 +151,7 @@ namespace BeyondSpiderAssembly
             // finds in a ship's component.
             AssignShip(SpaceCombatRegistry.ShipOf(bb));
             InitVisual();
+            ColliderOptimize();
         }
 
         public void AssignShip(ShipState assigned)
@@ -340,6 +341,72 @@ namespace BeyondSpiderAssembly
             overlayRenderer = overlay.GetComponent<MeshRenderer>();
             normalVis = vis == null ? null : vis.gameObject;
             overlay.SetActive(false);
+        }
+
+        // Wood/log blocks carry more than one BoxCollider in their child hierarchy (one per
+        // visual segment); Besiege welds a separate physical joint wherever a neighboring
+        // block's collider touches one of them, so leaving every one of them enabled lets a
+        // single oversized brace spanning the block weld several redundant joints to it at
+        // once. Collapsing down to one collider, resized to the block's full occupied volume,
+        // is WW2-Naval's WoodenArmour.ColliderOptimize -- same fix, same stock block types
+        // (this mod's hull uses the identical SingleWoodenBlock/DoubleWoodenBlock/Log prefabs),
+        // ported here rather than the joint-level cleanup tried earlier.
+        private void ColliderOptimize()
+        {
+            Transform joint1 = transform.Find("Joint1");
+            BoxCollider primary = joint1 == null ? null : joint1.GetComponent<BoxCollider>();
+            if (primary == null)
+            {
+                return;
+            }
+
+            BoxCollider[] colliders = GetComponentsInChildren<BoxCollider>();
+            for (int i = 0; i < colliders.Length; i++)
+            {
+                colliders[i].enabled = false;
+            }
+            primary.enabled = true;
+
+            // Same half/full read InitVisual already uses for this block (Vis/HalfVis renderer
+            // state), so the collider always matches whichever length variant is showing.
+            Transform vis = transform.Find("Vis");
+            Transform halfVis = vis == null ? null : vis.Find("HalfVis");
+            MeshRenderer halfRenderer = halfVis == null ? null : halfVis.GetComponent<MeshRenderer>();
+            bool half = halfRenderer != null && halfRenderer.enabled;
+
+            switch (bb.BlockID)
+            {
+                case (int)BlockType.SingleWoodenBlock:
+                    primary.center = new Vector3(0f, 0f, 0f);
+                    primary.size = new Vector3(0.8f, 0.8f, 1f);
+                    break;
+                case (int)BlockType.DoubleWoodenBlock:
+                    if (half)
+                    {
+                        primary.center = new Vector3(0f, 0f, 0f);
+                        primary.size = new Vector3(0.95f, 0.95f, 1f);
+                    }
+                    else
+                    {
+                        primary.center = new Vector3(0f, 0f, 0.5f);
+                        primary.size = new Vector3(0.95f, 0.95f, 2f);
+                    }
+                    break;
+                case (int)BlockType.Log:
+                    if (half)
+                    {
+                        primary.center = new Vector3(0f, 0f, 0.5f);
+                        primary.size = new Vector3(0.95f, 0.95f, 2f);
+                    }
+                    else
+                    {
+                        primary.center = new Vector3(0f, 0f, 1f);
+                        primary.size = new Vector3(0.95f, 0.95f, 3f);
+                    }
+                    break;
+                default:
+                    break;
+            }
         }
 
         private void UpdateVisual()
