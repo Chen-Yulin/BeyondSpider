@@ -1,0 +1,25 @@
+# Tracking-rate feed-forward: the gunner aims the full lead, not 5 ticks short of it
+
+**Problem.** A moving target's intercept point rotates around the shooter at some angular rate ω, so precise tracking means the turret must *turn at ω*, not merely point somewhere. Both tracking loops in the mod were pure proportional easing, and a proportional loop following a ramp settles with a steady-state error proportional to the ramp rate — always on the trailing side. Concretely:
+
+- **Gunner** (`SpaceGunnerBlock.DriveHinges` → `EaseStep`): inside the 2° ease zone the step is `0.2 × error` per tick, and `AddAngle` integrates it. Steady tracking requires `0.2 × error = ω·dt`, so the gun settles `5·ω·dt` degrees behind the computed lead. At a 10°/s line-of-sight rate that is a constant half-degree-plus of missing lead — tens of meters at combat ranges, worst exactly when the target is close and crossing fast.
+- **Flak** (`SpaceFlakTurretBlock`): two chained 0.2 ease stages — `StepAngle`'s ease zone (lag `(1−0.2)/0.2 = 4` ticks of rate) and the `currentYaw/currentPitch` pose lerp (4 more) — so the barrel trails the solution by 8 ticks of target-angle rate, while the `ready` gate happily reports on-target because it compares `realYaw` to `targetYaw`.
+
+Raising the 0.2 gain or shrinking the ease zone only scales the lag down and reintroduces the hinge-motor overshoot twitching the ease was added to prevent.
+
+**Decision: velocity feed-forward (aided tracking), per axis.** The error term keeps handling *position*; a new feed-forward term supplies the setpoint's own *rate*, so at steady tracking the P term carries ~zero and the mean lag vanishes — including the physical `SteeringWheel` motor's own lag, because `AngleToBe` is an integrator and accumulates whatever lead the motor needs.
+
+- **Gunner** (`UpdateAimFeedForward` + `DriveHinges`): each host tick the aim direction's rotation since last tick is measured **in the ship frame** (`ship.Core` rotation; own-ship rotation must not feed back — the error term already covers it) as a right-handed rotation vector in deg/tick, lightly smoothed (`Lerp 0.25` — track velocities step at radar scan updates, and smoothing a *rate* keeps its mean, so no lag is reintroduced). Per hinge, its projection onto `hinge.WorldAxis` (same signed convention as `SignedAngleTo`) is added into the step, and the total is still clamped to `TrackingSpeed × dt` — the player's slew budget is never exceeded, so during a max-rate slew the feed-forward changes nothing.
+- **Flak** (`ApplyAngleFeedForward`): the raw solution angles' per-tick rate (measured before any lead is applied — measuring the led angles would feed back), clamped to `trackingSpeed`, leads `targetYaw/targetPitch` by exactly the 8 known lag ticks. The `ready` margin is unchanged in magnitude: `realYaw` used to settle 4 ticks *behind* the raw target, now 4 ticks *ahead* of it — while the muzzle itself lands on it.
+- **Discontinuity guards** (both): the rate resets to zero on target switch, on any tick without a solution (gunner: `hostTick` continuity counter; flak: cleared by `DriveTurret` whenever `hasTarget` is false), and on a same-target jump above 5° in one tick, so a retarget never fires a lead spike through the barrel.
+
+**Also fixed in passing** (`SpaceFlakTurretBlock.FixedUpdate`): on MP clients, `currentYaw/currentPitch` were never advanced — `DriveTurret` is host-only and `ReceiveNetworkState` only wrote `realYaw/realPitch` — so replica flak turrets rendered frozen at their rest pose. The client tick now lerps the pose toward the host-sent angles (display smoothing only, per ADR-0015).
+
+**Status**: implemented, builds clean; pending in-game playtest (verify: shells from a broadside gunner land ON a steadily crossing target instead of consistently behind its stern; no new twitching near lock; retargets don't slew-spike).
+
+**Considered options**
+
+- *Raise the 0.2 gain / shrink the ease zone* — rejected: scales the lag, never removes it, and walks straight back into the overshoot-rebound twitching the ease exists to damp.
+- *PI control (add an integral term on the error)* — rejected: also kills ramp error in theory, but with a physical motor inside the loop it invites oscillation, needs anti-windup, and needs integral resets on every retarget. Feed-forward gets the same steady state without touching loop stability.
+- *Extrapolate the aim point forward by the loop's lag time τ* (one fix at the solution level) — rejected as primary: τ would have to fold in the hinge motor's lag, which depends on the player-set wheel speed, so it is a guessed constant; the per-axis feed-forward is grounded in the measured setpoint motion and needs no tuning. Kept in mind as a fallback.
+- *Measuring the gunner's aim rate in the hinge's local frame* — rejected: the hinge transform spins with its own joint, so the measurement would contaminate the feed-forward with the turret's own motion (positive feedback). Ship-core frame is the mount's frame to first order; the residual for stacked yaw-carries-pitch mounts is second-order and the P term absorbs it.

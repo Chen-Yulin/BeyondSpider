@@ -96,7 +96,7 @@ namespace BeyondSpiderAssembly
         // also shoves it in the round/missile's own travel direction at the exact impact point — a
         // fraction of the striker's own momentum (mass * speed), so heavier/faster hits knock harder
         // without a separate tuning knob per weapon. Placeholder fraction pending in-game tuning.
-        public const float KineticImpactImpulseFraction = 0.002f;
+        public const float KineticImpactImpulseFraction = 0.0005f;
 
         // ---- Blast knockback (physical feedback alongside MissileBlastDamage/Radius above) ----
         // A missile's explosion also shoves everything nearby off course — including cannon shells
@@ -104,7 +104,7 @@ namespace BeyondSpiderAssembly
         // inbound salvo's aim. Unlike blast DAMAGE (which falls off linearly to zero at the radius),
         // this force floors at BlastForceFalloffFloor so the edge of the blast still gives a real
         // shove instead of fading out. Placeholder scale pending in-game tuning.
-        public const float MissileBlastForcePerCharge = 30f;
+        public const float MissileBlastForcePerCharge = 10f;
         public const float BlastForceFalloffFloor = 0.3f;
 
         public static float MissileBlastForce(float warheadCharge)
@@ -138,6 +138,15 @@ namespace BeyondSpiderAssembly
         public const float HeavyMissileTurnRate = 40f;          // deg/s
         public const float MissileFuzeRadius = 6f;              // hard proximity detonation (+ target radius)
         public const float MissileArmingRadius = 14f;           // closest-approach fuze active only inside this
+
+        // ---- Missile self-hull avoidance ----
+        // A missile guiding onto a target on the far side of its own launching ship must not carve
+        // straight back through the hull to get there. MissileGuidance.BoxAvoidAccel adds a
+        // repulsive bias against the ship's own core-local OBB (ShipPartition.ComputeHullBounds);
+        // the margin scales with the hull's own size so bigger ships get a proportionally bigger
+        // berth. Placeholder gain pending in-game tuning.
+        public const float MissileHullAvoidMarginFactor = 0.6f; // fraction of the hull's largest half-extent
+        public const float MissileHullAvoidGain = 1800f;
 
         // ---- Repair model (recovery side of algorithm 2) ----
         // Integrity refills at ArmorRepairFraction of its pool per second at full power (40 HP/s
@@ -180,6 +189,126 @@ namespace BeyondSpiderAssembly
         public static float WeaponShotEnergy(float baseCost, float potentialDamage)
         {
             return baseCost + WeaponEnergyPerDamage * Mathf.Max(0f, potentialDamage);
+        }
+
+        // ---- Subsystem detonation (damage-refinement spec) ----
+        // A direct hit, or a missile blast with clear line of sight (SubsystemDetonation), sets
+        // off the reactor's own output or the capacitor's own stored charge as a secondary
+        // explosion — cube-root radius scaling off the driving quantity, same shape as
+        // MissileBlastRadius off warhead charge, so the numbers stay in a familiar unit language.
+        // The reactor coefficients are picked so even a modest single-block core (~1200 MW) already
+        // outranges and outdamages the heaviest missile (200-charge, ~23 m / ~3200 dmg) — "更大规模"
+        // in the user's spec. Capacitor coefficients sit below that: a stored-energy pop, not a
+        // fireball. Placeholder scale, pending in-game tuning (same status as the missile numbers
+        // above).
+        public const float ReactorBlastRadiusScale = 3.5f;
+        public const float ReactorBlastDamagePerPower = 2.2f;
+        public const float ReactorBlastForcePerPower = 0.5f;
+        public const float CapacitorBlastRadiusScale = 1.4f;
+        public const float CapacitorBlastDamagePerCapacity = 0.5f;
+        public const float CapacitorBlastForcePerCapacity = 0.1f;
+
+        public static float ReactorBlastRadius(float totalPower)
+        {
+            return ReactorBlastRadiusScale * Mathf.Pow(Mathf.Max(0f, totalPower), 1f / 3f);
+        }
+
+        public static float ReactorBlastDamage(float totalPower)
+        {
+            return Mathf.Max(0f, totalPower) * ReactorBlastDamagePerPower;
+        }
+
+        public static float ReactorBlastForce(float totalPower)
+        {
+            return Mathf.Max(0f, totalPower) * ReactorBlastForcePerPower;
+        }
+
+        public static float CapacitorBlastRadius(float capacity)
+        {
+            return CapacitorBlastRadiusScale * Mathf.Pow(Mathf.Max(0f, capacity), 1f / 3f);
+        }
+
+        public static float CapacitorBlastDamage(float capacity)
+        {
+            return Mathf.Max(0f, capacity) * CapacitorBlastDamagePerCapacity;
+        }
+
+        public static float CapacitorBlastForce(float capacity)
+        {
+            return Mathf.Max(0f, capacity) * CapacitorBlastForcePerCapacity;
+        }
+
+        // ---- Electric thruster (ADR-0018) ----
+        // A thruster's ceiling comes from its NOZZLE CROSS-SECTION — the two block-scale extents
+        // perpendicular to the thrust axis — not its volume (which is what the reactor and
+        // capacitor use). One geometric number then feeds three things at once: thrust ceiling,
+        // plume radius, and the efficiency curve below; volume could feed none of the latter two,
+        // and would let a player stretch a long thin needle for free thrust. Length contributes
+        // nothing, deliberately.
+        //
+        // Power follows the ideal-rocket relation P = F²/(2·ṁ) with mass flow ṁ ∝ nozzle area, so:
+        //   full throttle  → P = ThrusterPowerPerArea × area          (linear in size, easy to balance)
+        //   part throttle  → P scales with the SQUARE of output ratio  (half thrust, quarter power)
+        // Cruising is therefore very cheap and hard burns very expensive, and one big nozzle beats
+        // four small ones at equal thrust — paying for it in volume and center-of-mass balance.
+        //
+        // Placeholder scale pending in-game tuning, same status as every other constant here: at
+        // these numbers a scale-1 thruster gives 900 kN for 400 MW at full burn, weighs 1.5, and
+        // two of them accelerate a ~300-mass hull at ~6 m/s².
+        public const float ThrustPerArea = 900f;          // kN per unit nozzle cross-section
+        public const float ThrusterPowerPerArea = 400f;   // MW at full throttle, per unit cross-section
+        public const float ThrusterMassPerThrust = 1f / 750f;
+
+        // Thrust a nozzle of this cross-section can produce at full output.
+        public static float ThrusterMaxThrust(float nozzleArea)
+        {
+            return ThrustPerArea * Mathf.Max(0f, nozzleArea);
+        }
+
+        // Instantaneous draw (MW) at an output ratio in [0,1] — the F²/area law above.
+        public static float ThrusterPowerDraw(float nozzleArea, float outputRatio)
+        {
+            float ratio = Mathf.Clamp01(outputRatio);
+            return ThrusterPowerPerArea * Mathf.Max(0f, nozzleArea) * ratio * ratio;
+        }
+
+        // Inverse of the above, used for brownout degradation: with only `energyRatio` of the
+        // requested energy delivered, thrust falls off as its square root — the same law, run
+        // backwards, so a half-fed thruster pushes at ~71% instead of some invented number.
+        public static float ThrusterOutputForEnergyRatio(float energyRatio)
+        {
+            return Mathf.Sqrt(Mathf.Clamp01(energyRatio));
+        }
+
+        // Mass is LINEAR in thrust, deliberately unlike the reactor's 1.25-power penalty: stacking
+        // a size penalty on an engine is counterproductive — bigger engines would push their own
+        // weight worse, which is the opposite of what scaling one up should buy.
+        public static float ThrusterMass(float maxThrust)
+        {
+            return 0.3f + Mathf.Max(0f, maxThrust) * ThrusterMassPerThrust;
+        }
+
+        // Thruster detonation (ADR-0018 §10): a high-power electrical component that, unlike the
+        // reactor, MUST be mounted on the hull exterior — so the efficient big nozzle is also a big
+        // bomb you can't bury. Scaled off MaxThrust, sitting just under the capacitor's numbers
+        // (a thruster stores far less than a capacitor bank of the same nominal figure).
+        public const float ThrusterBlastRadiusScale = 1.2f;
+        public const float ThrusterBlastDamagePerThrust = 0.35f;
+        public const float ThrusterBlastForcePerThrust = 0.08f;
+
+        public static float ThrusterBlastRadius(float maxThrust)
+        {
+            return ThrusterBlastRadiusScale * Mathf.Pow(Mathf.Max(0f, maxThrust), 1f / 3f);
+        }
+
+        public static float ThrusterBlastDamage(float maxThrust)
+        {
+            return Mathf.Max(0f, maxThrust) * ThrusterBlastDamagePerThrust;
+        }
+
+        public static float ThrusterBlastForce(float maxThrust)
+        {
+            return Mathf.Max(0f, maxThrust) * ThrusterBlastForcePerThrust;
         }
     }
 }

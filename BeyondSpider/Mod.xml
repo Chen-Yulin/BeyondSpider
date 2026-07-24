@@ -6,13 +6,13 @@
 	-->
 
 	<!-- General information about the mod. -->
-	<Name>BeyondSpider</Name>
+	<Name>Broken Beyond Extension</Name>
 	<Author>Chen, Yulin</Author>
 	<!-- Major.Minor.Build -->
 	<Version>0.1.0</Version>
 	
 	<Description>
-First playable space-combat slice: ship core, energy grid, capacitors, radar tracks, captain-driven fire control, shield projector, CIWS, and heavy incoming missile.
+ Space-combat extenssion: energy grid, radar tracks, fire control system, shield projector, railguns, lazers and missiles. Remove boundaries.
 	</Description>
 	
 	<!-- Square icon of the mod. Texture defined in the Resources section.
@@ -98,6 +98,7 @@ First playable space-combat slice: ship core, energy grid, capacitors, radar tra
 		<Block path="LaserLance.xml" />
 		<Block path="MissileLauncher.xml" />
 		<Block path="SpaceGunner.xml" />
+		<Block path="Thruster.xml" />
 	</Blocks>
 	
 	<!-- Any entities (level objects) your mod adds to the game.
@@ -135,6 +136,9 @@ First playable space-combat slice: ship core, energy grid, capacitors, radar tra
 		<Texture name="BS Captain Texture" path="ShipCore\captain.png"/>
 		<Mesh name="BS SuperCap Mesh" path="SuperCapacitor\Battery.obj"/>
 		<Texture name="BS SuperCap Texture" path="SuperCapacitor\Battery.png"/>
+		<Mesh name="BS Thruster Mesh" path="Thruster\Thruster.obj"/>
+		<Texture name="BS Thruster Texture" path="Thruster\Thruster.png"/>
+		<Texture name="BS Thruster Plume Texture" path="Thruster\Plume.png"/>
 		<Mesh name="BS Radar Mesh" path="Radar\radar.obj"/>
 		<Texture name="BS Radar Texture" path="Radar\radar.png"/>
 		<Mesh name="BS ShieldProjector Mesh" path="ShieldProjector\frustum.obj"/>

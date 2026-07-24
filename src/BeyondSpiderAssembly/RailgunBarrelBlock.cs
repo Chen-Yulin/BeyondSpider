@@ -4,6 +4,44 @@ using UnityEngine;
 
 namespace BeyondSpiderAssembly
 {
+    // MP replication for the railgun's fired slug (the flak turret's ShotMsg pattern): the host
+    // fires the authoritative round in FireAt and broadcasts the launch parameters; each client's
+    // matching barrel spawns its own visual mirror round (NetAuthority gates it to display-only).
+    public class RailgunNet : SingleInstance<RailgunNet>
+    {
+        public override string Name { get { return "BeyondSpider Railgun Net"; } }
+
+        // playerId, guidHash, muzzlePos, forward, worldVelocity, caliberMm, lifetime
+        public static MessageType ShotMsg = ModNetworking.CreateMessageType(
+            DataType.Integer, DataType.Integer, DataType.Vector3, DataType.Vector3, DataType.Vector3, DataType.Single, DataType.Single);
+
+        private readonly Dictionary<string, RailgunBarrelBlock> barrels = new Dictionary<string, RailgunBarrelBlock>();
+
+        public void Register(RailgunBarrelBlock barrel)
+        {
+            barrels[Key(barrel.PlayerID, barrel.GuidHash)] = barrel;
+        }
+
+        public void Unregister(RailgunBarrelBlock barrel)
+        {
+            barrels.Remove(Key(barrel.PlayerID, barrel.GuidHash));
+        }
+
+        public void ShotReceiver(Message msg)
+        {
+            RailgunBarrelBlock barrel;
+            if (barrels.TryGetValue(Key((int)msg.GetData(0), (int)msg.GetData(1)), out barrel) && barrel != null)
+            {
+                barrel.ReceiveShot((Vector3)msg.GetData(2), (Vector3)msg.GetData(3), (Vector3)msg.GetData(4), (float)msg.GetData(5), (float)msg.GetData(6));
+            }
+        }
+
+        private static string Key(int playerId, int guid)
+        {
+            return playerId + ":" + guid;
+        }
+    }
+
     public class RailgunBarrelBlock : SpaceBlock, IShipGun
     {
         // Auto-properties (not plain fields) so they satisfy IShipGun; assignment stays in
@@ -29,6 +67,8 @@ namespace BeyondSpiderAssembly
         // Fixed firing overhead added on top of the per-damage cost from SpaceBalance; the
         // damage-scaled part is what dominates. See FireAt.
         private const float EnergyPerShotBase = 40f;
+
+        public int GuidHash { get; private set; }
 
         private float reloadTime;
         private float reload;
@@ -93,6 +133,8 @@ namespace BeyondSpiderAssembly
             reloadTime = Mathf.Clamp(0.35f + caliberMm / 180f, 0.18f, 6f);
             reload = reloadTime;
             manualFireQueued = false;
+            GuidHash = BlockBehaviour.BuildingBlock.Guid.GetHashCode();
+            RailgunNet.Instance.Register(this);
             ShipState ship = OwnShip();
             if (ship != null)
             {
@@ -108,6 +150,7 @@ namespace BeyondSpiderAssembly
 
         public override void OnSimulateStop()
         {
+            RailgunNet.Instance.Unregister(this);
             ShipState ship = OwnShip();
             if (ship != null)
             {
@@ -198,11 +241,43 @@ namespace BeyondSpiderAssembly
                 muzzlePosition, direction.normalized, velocity, caliberMm,
                 velocityDamageCoefficient, mass, lifetime, PlayerID, Team, muzzleVelocity);
 
+            // FireAt only runs host-side (both fire paths hang off SimulateFixedUpdateHost) —
+            // broadcast the launch so every client's matching barrel spawns a visual mirror round.
+            if (StatMaster.isMP)
+            {
+                ModNetworking.SendToAll(RailgunNet.ShotMsg.CreateMessage(
+                    PlayerID, GuidHash, muzzlePosition, direction.normalized, velocity, caliberMm, lifetime));
+            }
+
             if (Body != null)
             {
                 Body.AddForce(-direction.normalized * (caliberMm / 100f) * (muzzleVelocity / 500f) * 6f, ForceMode.Impulse);
             }
             return true;
+        }
+
+        // Client mirror of a host shot (routed here by RailgunNet.ShotReceiver via this barrel's
+        // PlayerID+GuidHash). Spawns the same round — NetAuthority gates it to a visual-only march —
+        // and resets the reload ring so the client's OnGUI progress circle animates in step. Muzzle
+        // sound and tail glow come free from inside SpawnKineticRound. Mass is recomputed from the
+        // received caliber exactly like the flak's ReceiveLargeShot.
+        public void ReceiveShot(Vector3 position, Vector3 forward, Vector3 velocity, float shotCaliber, float lifetime)
+        {
+            reload = 0f;
+            SpaceBallistics.SpawnKineticRound(
+                position, forward, velocity, shotCaliber, SpaceBalance.KineticDamagePerKE,
+                Mathf.Max(0.05f, shotCaliber / 300f), lifetime, PlayerID, Team, muzzleVelocity);
+        }
+
+        // Client-side reload ticking for the OnGUI ring (the host ticks inside
+        // SimulateFixedUpdateHost, which never runs here) — the missile launcher's
+        // TickReloadAndDoor idiom.
+        private void FixedUpdate()
+        {
+            if (BlockBehaviour != null && BlockBehaviour.isSimulating && StatMaster.isClient)
+            {
+                reload = Mathf.Min(reloadTime, reload + Time.fixedDeltaTime);
+            }
         }
 
         public Vector3 ApproximateMuzzlePosition()
@@ -284,6 +359,26 @@ namespace BeyondSpiderAssembly
         // channel-0 threats it steers its bound guns at, sticky until that target drops off the list.
         private readonly FireChannelAssignment channel0Assignment = new FireChannelAssignment();
 
+        // Rate feed-forward, ADR-0016. EaseStep alone is proportional control: while the aim
+        // direction rotates at ω (a moving target's lead point always does), the loop settles
+        // with a steady error of ω·dt/0.2 on the trailing side — the guns systematically aim
+        // short of the computed lead. Feeding the setpoint's own per-tick rotation into the
+        // hinge step cancels that: AddAngle is an integrator, so with the ramp rate supplied
+        // the P term only carries residual disturbance and the mean lag goes to zero, motor
+        // lag included. The rate is measured in the ship frame (own-ship rotation must not
+        // feed back — the error term already handles it), lightly smoothed because track
+        // velocities step at radar scan updates, and reset on any discontinuity: target
+        // switch, a skipped tick, or a same-target aim jump past AimRateJumpResetDegrees.
+        private const float AimRateSmoothing = 0.25f;
+        private const float AimRateJumpResetDegrees = 5f;
+
+        private bool hasAimHistory;
+        private Vector3 prevAimShipLocal;
+        private Vector3 aimRateShipLocal; // right-handed rotation vector, deg per tick, ship frame
+        private ITrackable aimRateTarget;
+        private int aimRateTick;
+        private int hostTick;
+
         // Empirical hinge direction calibration. Whether AngleToBe += x turns the gun in the
         // +x direction around a hinge's axis depends on how the hinge was placed/flipped, and
         // deriving it from Wheel.Flipped alone proved unreliable. So right after simulation
@@ -339,6 +434,9 @@ namespace BeyondSpiderAssembly
             hingeSigns.Clear();
             calibrationBaselines.Clear();
             calibrationApplied.Clear();
+            hasAimHistory = false;
+            aimRateShipLocal = Vector3.zero;
+            aimRateTarget = null;
             ShipState ship = OwnShip();
             if (ship != null)
             {
@@ -400,6 +498,9 @@ namespace BeyondSpiderAssembly
 
         public override void SimulateFixedUpdateHost()
         {
+            // Counted before any early-out so the feed-forward can tell "aimed last tick too"
+            // from "came back after a gap" — a stale prevAim sample must not be differentiated.
+            hostTick++;
             ShipState ship = OwnShip();
             if (ship != null && !registered)
             {
@@ -450,8 +551,9 @@ namespace BeyondSpiderAssembly
             }
 
             Vector3 aimDirection = delta.normalized;
-            DriveHinges(orientationHinges, aimDirection);
-            DriveHinges(pitchHinges, aimDirection);
+            Vector3 aimRateWorld = UpdateAimFeedForward(ship, solution.Target, aimDirection);
+            DriveHinges(orientationHinges, aimDirection, aimRateWorld);
+            DriveHinges(pitchHinges, aimDirection, aimRateWorld);
 
             bool ready = Vector3.Angle(referenceGun.transform.forward, aimDirection) <= AimTolerance.Value;
             SetFireEmulation(ready);
@@ -608,6 +710,10 @@ namespace BeyondSpiderAssembly
             pitchHinges.Clear();
             boundGuns.Clear();
 
+            // Hinge ownership is a physics claim (the owned hinge forces wheel state every tick),
+            // so clients never take it — their replica turrets are posed by vanilla sync. The
+            // binding lists themselves are still built for the link-line overlay.
+            bool takeOwnership = active && !NetAuthority.IsClient;
             IList<SpaceGunnerHinge> hinges = SpaceGunnerHingeRegistry.HingesFor(PlayerID);
             for (int i = 0; i < hinges.Count; i++)
             {
@@ -620,7 +726,7 @@ namespace BeyondSpiderAssembly
                 if (MatchesAny(hinge, OrientationLeftKey, OrientationRightKey))
                 {
                     orientationHinges.Add(hinge);
-                    if (active)
+                    if (takeOwnership)
                     {
                         hinge.AddOwner(this);
                     }
@@ -628,7 +734,7 @@ namespace BeyondSpiderAssembly
                 if (MatchesAny(hinge, PitchUpKey, PitchDownKey))
                 {
                     pitchHinges.Add(hinge);
-                    if (active)
+                    if (takeOwnership)
                     {
                         hinge.AddOwner(this);
                     }
@@ -677,7 +783,45 @@ namespace BeyondSpiderAssembly
             }
         }
 
-        private void DriveHinges(List<SpaceGunnerHinge> hinges, Vector3 aimDirection)
+        // Measures how fast the aim direction itself is rotating and returns that rate as a
+        // world-frame rotation vector in degrees per tick, for DriveHinges to feed forward.
+        // Measured and smoothed in the ship frame so the ship's own rotation stays out of it;
+        // see the field comment for why any discontinuity resets the rate to zero.
+        private Vector3 UpdateAimFeedForward(ShipState ship, ITrackable target, Vector3 aimDirection)
+        {
+            Quaternion shipRotation = ship.Core != null ? ship.Core.transform.rotation : transform.rotation;
+            Vector3 aimLocal = Quaternion.Inverse(shipRotation) * aimDirection;
+
+            bool continuous = hasAimHistory && aimRateTarget == target && hostTick == aimRateTick + 1;
+            if (continuous)
+            {
+                float angleDeg = Vector3.Angle(prevAimShipLocal, aimLocal);
+                if (angleDeg > AimRateJumpResetDegrees)
+                {
+                    aimRateShipLocal = Vector3.zero;
+                }
+                else
+                {
+                    Vector3 rotationAxis = Vector3.Cross(prevAimShipLocal, aimLocal);
+                    Vector3 instantRate = rotationAxis.sqrMagnitude < 0.000001f
+                        ? Vector3.zero
+                        : rotationAxis.normalized * angleDeg;
+                    aimRateShipLocal = Vector3.Lerp(aimRateShipLocal, instantRate, AimRateSmoothing);
+                }
+            }
+            else
+            {
+                aimRateShipLocal = Vector3.zero;
+            }
+
+            hasAimHistory = true;
+            prevAimShipLocal = aimLocal;
+            aimRateTarget = target;
+            aimRateTick = hostTick;
+            return shipRotation * aimRateShipLocal;
+        }
+
+        private void DriveHinges(List<SpaceGunnerHinge> hinges, Vector3 aimDirection, Vector3 aimRateWorld)
         {
             float maxStep = TrackingSpeed.Value * Time.fixedDeltaTime;
             for (int i = 0; i < hinges.Count; i++)
@@ -697,7 +841,12 @@ namespace BeyondSpiderAssembly
                 }
 
                 float signedAngle = hinge.SignedAngleTo(referenceGun.transform.forward, aimDirection);
-                float step = EaseStep(signedAngle, maxStep);
+                // Both terms share SignedAngleTo's right-handed convention, so the rate vector's
+                // projection on this hinge's axis is exactly the degrees the setpoint moves
+                // around it this tick. The clamp keeps the player's TrackingSpeed as the total
+                // slew budget — during a max-rate slew the feed-forward changes nothing.
+                float feedForward = Vector3.Dot(aimRateWorld, hinge.WorldAxis);
+                float step = Mathf.Clamp(EaseStep(signedAngle, maxStep) + feedForward, -maxStep, maxStep);
                 hinge.AddAngle(step * sign);
             }
         }

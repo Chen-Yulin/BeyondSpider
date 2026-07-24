@@ -37,6 +37,17 @@ namespace BeyondSpiderAssembly
         private static readonly Dictionary<Machine, int> pendingMachines = new Dictionary<Machine, int>();
         private static readonly Dictionary<BlockBehaviour, float> lateRetryAt = new Dictionary<BlockBehaviour, float>();
 
+        // Network-machine hardening (first MP no-combat playtest: a remote machine's ship read 0%
+        // energy forever): a machine received over the network may not have all its joints/clusters
+        // wired by partition time, so the BFS reaches only part of the hull and the rest — possibly
+        // including its capacitor banks — gets PERMANENTLY null-mapped ("no core can reach it"),
+        // which also defeats the blocks' own registration retries (they read the null cache). When
+        // a finished partition leaves mod blocks unmapped, re-run it a bounded number of times
+        // after a real delay so late-wired joints get another chance.
+        private static readonly Dictionary<Machine, int> partitionRetries = new Dictionary<Machine, int>();
+        private const int MaxPartitionRetries = 2;
+        private const int PartitionRetryDelayTicks = 50; // ≈1 s of fixed steps per retry
+
         // Shared scratch buffers — partition and late-resolve are one-shot walks, never re-entrant.
         private static readonly List<Machine> machineBuffer = new List<Machine>();
         private static readonly List<BlockBehaviour> neighborBuffer = new List<BlockBehaviour>();
@@ -63,6 +74,7 @@ namespace BeyondSpiderAssembly
         {
             pendingMachines.Clear();
             lateRetryAt.Clear();
+            partitionRetries.Clear();
         }
 
         // Pumped by SpaceCombatRuntime.FixedUpdate on every machine (host and clients).
@@ -85,6 +97,7 @@ namespace BeyondSpiderAssembly
                 if (machine == null || !machine.isSimulating)
                 {
                     pendingMachines.Remove(machine);
+                    partitionRetries.Remove(machine);
                     continue;
                 }
 
@@ -138,6 +151,7 @@ namespace BeyondSpiderAssembly
             coreBuffer.Sort(CompareCores);
 
             visited.Clear();
+            int shipsMinted = 0;
             for (int i = 0; i < coreBuffer.Count; i++)
             {
                 BlockBehaviour seed = coreBuffer[i].BlockBehaviour;
@@ -147,19 +161,58 @@ namespace BeyondSpiderAssembly
                 }
                 CollectComponent(seed);
                 BuildShip(machine, componentBuffer);
+                shipsMinted++;
             }
 
             // Blocks no core can reach belong to no ship. Map them explicitly so every later
-            // OwnShip() lookup on them is a single dictionary hit instead of a re-walk.
+            // OwnShip() lookup on them is a single dictionary hit instead of a re-walk. Mod
+            // blocks (SpaceBlock subsystems) landing here are counted: on a locally built ship
+            // that means genuine debris, but on a network-received machine it usually means the
+            // joints weren't wired yet — see the retry below.
+            int unmappedModBlocks = 0;
             for (int i = 0; i < blocks.Count; i++)
             {
                 BlockBehaviour block = blocks[i];
                 if (block != null && !visited.Contains(block))
                 {
                     SpaceCombatRegistry.MapBlock(block, null);
+                    if (block.GetComponent<SpaceBlock>() != null)
+                    {
+                        unmappedModBlocks++;
+                    }
                 }
             }
             visited.Clear();
+
+            Debug.Log("[BeyondSpider] partition (" + NetRole() + "): player " + machine.PlayerID
+                + " machine, " + blocks.Count + " sim blocks, " + shipsMinted + " ship(s), "
+                + coreBuffer.Count + " core(s), unmapped mod blocks: " + unmappedModBlocks);
+
+            // Bounded self-heal for late-wired network machines: mod blocks a core couldn't reach
+            // get the whole machine re-partitioned (which clears the null verdicts via DropMachine)
+            // up to MaxPartitionRetries times, ~1 s apart.
+            if (unmappedModBlocks > 0)
+            {
+                int used;
+                partitionRetries.TryGetValue(machine, out used);
+                if (used < MaxPartitionRetries)
+                {
+                    partitionRetries[machine] = used + 1;
+                    pendingMachines[machine] = PartitionRetryDelayTicks;
+                    Debug.Log("[BeyondSpider] partition retry " + (used + 1) + "/" + MaxPartitionRetries
+                        + " queued for player " + machine.PlayerID + " machine (" + unmappedModBlocks
+                        + " mod blocks unreached)");
+                }
+            }
+            else
+            {
+                partitionRetries.Remove(machine);
+            }
+        }
+
+        private static string NetRole()
+        {
+            return !StatMaster.isMP ? "sp" : (StatMaster.isClient ? "client" : "host");
         }
 
         // BFS from seed into componentBuffer, marking the shared `visited` set (which persists
@@ -309,6 +362,9 @@ namespace BeyondSpiderAssembly
             {
                 BlockBehaviour block = component[i];
                 SpaceCombatRegistry.MapBlock(block, ship);
+                // Kept for the thrust allocator's center-of-mass sweep (ADR-0018) — the first
+                // consumer that needs the ship's whole block roster rather than one subsystem list.
+                ship.Blocks.Add(block);
 
                 // Central subsystem slotting: this runs on clients too, unlike the blocks' own
                 // host-gated per-tick registration retries (which stay, as self-healing for blocks

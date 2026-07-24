@@ -17,7 +17,9 @@ namespace BeyondSpiderAssembly
         // sprays sparks (NanoArmorBehaviour.ReflectsLaser / LaserImpactFx).
         public static NanoArmorBehaviour RouteLaserHit(Collider hitCollider, float damage)
         {
-            if (hitCollider == null || damage <= 0f)
+            // MP rule: only the authority routes damage. The client laser replay (LaserNet) picks
+            // its impact visual from the hitType carried in the fire message, never from here.
+            if (!NetAuthority.IsAuthority || hitCollider == null || damage <= 0f)
             {
                 return null;
             }

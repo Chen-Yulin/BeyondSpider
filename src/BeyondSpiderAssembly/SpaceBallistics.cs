@@ -325,6 +325,203 @@ namespace BeyondSpiderAssembly
             Object.Destroy(root, 3.2f);
         }
 
+        // Reactor cook-off (damage-refinement spec: "similar to the missile explosion but a bigger
+        // scale, with lightning"). Same vacuum layer recipe as PlayMissileBlast — flash, expanding
+        // gas, debris sparks, all momentum-conserving under MissileBlastDrift — scaled up off the
+        // core's own totalPower instead of a warhead charge, plus a dense corona of arcing bolts
+        // (SpawnLightningBurst) that's the one element a plain warhead blast never had. Runs on
+        // host and clients alike (each machine plays its own local copy off the same
+        // position/velocity/scale via SubsystemDetonationNet); the real damage is
+        // SubsystemDetonation.ApplySecondaryBlast, host-only.
+        public static void PlayReactorExplosion(Vector3 position, Vector3 driftVelocity, float totalPower)
+        {
+            float blastRadius = SpaceBalance.ReactorBlastRadius(totalPower);
+
+            GameObject root = new GameObject("BeyondSpider Reactor Blast");
+            root.transform.position = position;
+            root.transform.rotation = Quaternion.identity;
+
+            ParticleSystem.EmitParams emit = new ParticleSystem.EmitParams();
+
+            ParticleSystem flash = CreateBlastLayer(root.transform, "Flash", false, FlashFade());
+            ParticleSystem.SizeOverLifetimeModule flashSize = flash.sizeOverLifetime;
+            flashSize.enabled = true;
+            flashSize.size = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.Linear(0f, 0.5f, 1f, 2.1f));
+            for (int i = 0; i < 6; i++)
+            {
+                emit.velocity = Random.insideUnitSphere * blastRadius * 0.06f;
+                emit.startLifetime = Random.Range(0.22f, 0.4f);
+                emit.startSize = blastRadius * Random.Range(0.4f, 0.65f);
+                emit.startColor = new Color(1f, 0.98f, 0.92f);
+                flash.Emit(emit, 1);
+            }
+
+            ParticleSystem gas = CreateBlastLayer(root.transform, "Gas", false, GasFade());
+            ParticleSystem.SizeOverLifetimeModule gasSize = gas.sizeOverLifetime;
+            gasSize.enabled = true;
+            gasSize.size = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.Linear(0f, 0.65f, 1f, 3.1f));
+            int gasCount = Mathf.Clamp(Mathf.RoundToInt(80f + totalPower * 0.05f), 100, 320);
+            float gasSpeed = blastRadius * 0.5f;
+            for (int i = 0; i < gasCount; i++)
+            {
+                emit.velocity = Random.onUnitSphere * gasSpeed * Random.Range(0.12f, 1f);
+                emit.startLifetime = Random.Range(1.6f, 3.2f);
+                emit.startSize = blastRadius * Random.Range(0.08f, 0.19f);
+                emit.startColor = Color.Lerp(new Color(1f, 0.9f, 0.6f), new Color(0.65f, 0.6f, 1f), Random.value * 0.3f);
+                gas.Emit(emit, 1);
+            }
+
+            ParticleSystem sparks = CreateBlastLayer(root.transform, "Sparks", true, SparkFade());
+            int sparkCount = Mathf.Clamp(Mathf.RoundToInt(24f + totalPower * 0.018f), 30, 110);
+            float sparkSpeed = blastRadius * 1.2f;
+            float sparkSizeScale = Mathf.Clamp(blastRadius / 30f, 1f, 3.5f);
+            for (int i = 0; i < sparkCount; i++)
+            {
+                emit.velocity = Random.onUnitSphere * sparkSpeed * Random.Range(0.55f, 1f);
+                emit.startLifetime = Random.Range(0.9f, 2f);
+                emit.startSize = Random.Range(0.3f, 0.6f) * sparkSizeScale;
+                emit.startColor = new Color(1f, 0.9f, 0.65f);
+                sparks.Emit(emit, 1);
+            }
+
+            // Lightning is the element that separates a reactor breach from an ordinary warhead: a
+            // dense corona of arcs discharging outward as containment fails.
+            SpawnLightningBurst(root.transform, blastRadius * 0.85f, 16, new Color(0.75f, 0.85f, 1f), 0.22f, 0.5f);
+
+            Light light = root.AddComponent<Light>();
+            light.type = LightType.Point;
+            light.color = new Color(0.85f, 0.9f, 1f);
+            light.range = Mathf.Clamp(blastRadius * 1.6f, 20f, 220f);
+            light.intensity = 8f;
+
+            MissileBlastDrift drift = root.AddComponent<MissileBlastDrift>();
+            drift.Velocity = driftVelocity;
+            drift.FlashLight = light;
+            drift.LightFadeSeconds = 1.2f;
+
+            Object.Destroy(root, 4f);
+        }
+
+        // Capacitor bank discharge (damage-refinement spec: "particle effect emphasizing lightning
+        // and ions scattering explosively"). Deliberately NOT a scaled-down fireball: a small hot
+        // flash, a corona of arcing bolts denser than the reactor's own, and fast electric-blue
+        // "ion" sparks flying outward, all scaled off the bank's own Capacity. Runs on host and
+        // clients alike, same as PlayReactorExplosion.
+        public static void PlayCapacitorExplosion(Vector3 position, Vector3 driftVelocity, float capacity)
+        {
+            float blastRadius = SpaceBalance.CapacitorBlastRadius(capacity);
+
+            GameObject root = new GameObject("BeyondSpider Capacitor Blast");
+            root.transform.position = position;
+            root.transform.rotation = Quaternion.identity;
+
+            ParticleSystem.EmitParams emit = new ParticleSystem.EmitParams();
+
+            ParticleSystem flash = CreateBlastLayer(root.transform, "Flash", false, IonFlashFade());
+            ParticleSystem.SizeOverLifetimeModule flashSize = flash.sizeOverLifetime;
+            flashSize.enabled = true;
+            flashSize.size = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.Linear(0f, 0.5f, 1f, 1.6f));
+            for (int i = 0; i < 3; i++)
+            {
+                emit.velocity = Random.insideUnitSphere * blastRadius * 0.05f;
+                emit.startLifetime = Random.Range(0.12f, 0.2f);
+                emit.startSize = blastRadius * Random.Range(0.3f, 0.5f);
+                emit.startColor = new Color(0.85f, 0.95f, 1f);
+                flash.Emit(emit, 1);
+            }
+
+            // Ions: fast, small, electric-blue sparks scattering radially — the "四散的离子" the user
+            // asked for, distinct from the reactor's slower orange-white gas cloud.
+            ParticleSystem ions = CreateBlastLayer(root.transform, "Ions", true, IonSparkFade());
+            int ionCount = Mathf.Clamp(Mathf.RoundToInt(40f + capacity * 0.05f), 50, 220);
+            float ionSpeed = blastRadius * 1.6f;
+            for (int i = 0; i < ionCount; i++)
+            {
+                emit.velocity = Random.onUnitSphere * ionSpeed * Random.Range(0.4f, 1f);
+                emit.startLifetime = Random.Range(0.35f, 0.9f);
+                emit.startSize = Random.Range(0.12f, 0.28f);
+                emit.startColor = Color.Lerp(new Color(0.6f, 0.85f, 1f), new Color(0.85f, 0.6f, 1f), Random.value * 0.4f);
+                ions.Emit(emit, 1);
+            }
+
+            // Lightning dominates this effect — dense, bright, cyan-white, shorter-lived than the
+            // reactor's (a capacitor discharges instantly, it doesn't keep burning).
+            SpawnLightningBurst(root.transform, blastRadius, 20, new Color(0.7f, 0.9f, 1f), 0.1f, 0.28f);
+
+            Light light = root.AddComponent<Light>();
+            light.type = LightType.Point;
+            light.color = new Color(0.7f, 0.85f, 1f);
+            light.range = Mathf.Clamp(blastRadius * 1.5f, 10f, 90f);
+            light.intensity = 6f;
+
+            MissileBlastDrift drift = root.AddComponent<MissileBlastDrift>();
+            drift.Velocity = driftVelocity;
+            drift.FlashLight = light;
+
+            Object.Destroy(root, 1.5f);
+        }
+
+        // One-shot radiating lightning arcs shared by the reactor's and capacitor's detonation FX
+        // (user spec: emphasize lightning). Unlike LaserFx's continuously re-aimed beam bolts, each
+        // arc here is built once, crackles in place for its own short lifetime, then self-destructs.
+        private static void SpawnLightningBurst(Transform parent, float radius, int boltCount, Color color, float lifetimeMin, float lifetimeMax)
+        {
+            for (int i = 0; i < boltCount; i++)
+            {
+                GameObject go = new GameObject("Lightning" + i);
+                go.transform.SetParent(parent);
+                go.transform.localPosition = Vector3.zero;
+                go.transform.localRotation = Quaternion.identity;
+
+                LineRenderer line = go.AddComponent<LineRenderer>();
+                line.useWorldSpace = false;
+                line.material = new Material(Shader.Find("Particles/Additive"));
+                line.material.mainTexture = SoftDotTexture();
+
+                DetonationLightningArc arc = go.AddComponent<DetonationLightningArc>();
+                arc.EndPoint = Random.onUnitSphere * radius * Random.Range(0.55f, 1f);
+                arc.BoltColor = color;
+                arc.Lifetime = Random.Range(lifetimeMin, lifetimeMax);
+                arc.Initialize();
+            }
+        }
+
+        // Blue-white variants of FlashFade/SparkFade for the capacitor's ion-themed layers.
+        private static Gradient IonFlashFade()
+        {
+            Gradient gradient = new Gradient();
+            gradient.SetKeys(
+                new GradientColorKey[]
+                {
+                    new GradientColorKey(Color.white, 0f),
+                    new GradientColorKey(new Color(0.7f, 0.85f, 1f), 1f)
+                },
+                new GradientAlphaKey[]
+                {
+                    new GradientAlphaKey(1f, 0f),
+                    new GradientAlphaKey(0f, 1f)
+                });
+            return gradient;
+        }
+
+        private static Gradient IonSparkFade()
+        {
+            Gradient gradient = new Gradient();
+            gradient.SetKeys(
+                new GradientColorKey[]
+                {
+                    new GradientColorKey(new Color(0.85f, 0.95f, 1f), 0f),
+                    new GradientColorKey(new Color(0.55f, 0.75f, 1f), 1f)
+                },
+                new GradientAlphaKey[]
+                {
+                    new GradientAlphaKey(1f, 0f),
+                    new GradientAlphaKey(0.7f, 0.4f),
+                    new GradientAlphaKey(0f, 1f)
+                });
+            return gradient;
+        }
+
         // One blast layer: a burst-only, manually-emitted ParticleSystem with the vacuum ground
         // rules baked in. Local simulation space is load-bearing — it's what lets MissileBlastDrift
         // move the root and carry every already-emitted particle with it (momentum drift); the flak
@@ -539,6 +736,75 @@ namespace BeyondSpiderAssembly
                 FlashLight.enabled = k > 0.01f;
                 FlashLight.intensity = baseIntensity * k * k;
             }
+        }
+    }
+
+    // One-shot lightning arc built by SpawnLightningBurst: a jagged LineRenderer from the blast
+    // center to a random EndPoint, redrawn with fresh per-segment jitter every frame for a crackle
+    // effect (same jitter idea as LaserFx.RebuildBolt, but built once and short-lived rather than
+    // continuously re-aimed along a moving beam), fading out and self-destructing after Lifetime.
+    public class DetonationLightningArc : MonoBehaviour
+    {
+        public Vector3 EndPoint;
+        public Color BoltColor;
+        public float Lifetime = 0.28f;
+
+        private const int Segments = 9;
+        private const float JitterFactor = 0.22f;
+
+        private LineRenderer line;
+        private float timer;
+
+        public void Initialize()
+        {
+            line = GetComponent<LineRenderer>();
+            line.SetVertexCount(Segments + 1);
+            Redraw();
+        }
+
+        private void Update()
+        {
+            timer += Time.deltaTime;
+            if (timer >= Lifetime)
+            {
+                Destroy(gameObject);
+                return;
+            }
+            Redraw();
+        }
+
+        private void Redraw()
+        {
+            float fade = 1f - timer / Lifetime;
+            float length = EndPoint.magnitude;
+            Vector3 dir = length > 0.001f ? EndPoint / length : Vector3.forward;
+            Vector3 perpA = Vector3.Cross(dir, Vector3.up);
+            if (perpA.sqrMagnitude < 0.0001f)
+            {
+                perpA = Vector3.Cross(dir, Vector3.right);
+            }
+            perpA.Normalize();
+            Vector3 perpB = Vector3.Cross(dir, perpA);
+            float jitterRadius = length * JitterFactor;
+
+            for (int i = 0; i <= Segments; i++)
+            {
+                float t = (float)i / Segments;
+                Vector3 point = EndPoint * t;
+                if (i != 0 && i != Segments)
+                {
+                    // sin envelope keeps both ends pinned (origin at the blast center, tip at
+                    // EndPoint) so the jitter reads as a bolt rather than a loose scribble.
+                    float envelope = Mathf.Sin(t * Mathf.PI);
+                    Vector3 jitter = (perpA * Random.Range(-1f, 1f) + perpB * Random.Range(-1f, 1f)) * jitterRadius * envelope;
+                    point += jitter;
+                }
+                line.SetPosition(i, point);
+            }
+
+            float width = Mathf.Lerp(0.06f, 0.32f, Mathf.Clamp01(length / 12f)) * fade;
+            line.SetWidth(width, width * 0.15f);
+            line.SetColors(BoltColor * fade, BoltColor * fade * 0.35f);
         }
     }
 
@@ -910,6 +1176,14 @@ namespace BeyondSpiderAssembly
             Vector3 dir = body.velocity / speed;
             transform.rotation = Quaternion.LookRotation(dir, Vector3.up);
 
+            // MP rule: every round on a client is a visual mirror (authoritative rounds only ever
+            // spawn host-side), so the damage march below is authority-only.
+            if (NetAuthority.IsClient)
+            {
+                ClientVisualMarch(dir, sweep);
+                return;
+            }
+
             RaycastHit[] hits = Physics.RaycastAll(transform.position, dir, sweep);
             if (hits == null || hits.Length == 0)
             {
@@ -943,9 +1217,24 @@ namespace BeyondSpiderAssembly
                     return; // Stop (round destroyed) or Ricochet (redirected) ends this tick
                 }
 
+                // A direct hit on the reactor or capacitor detonates it outright (damage-refinement
+                // spec) and stops the round here, same as striking hard geometry.
+                if (SubsystemDetonation.TryDirectHit(hit.collider))
+                {
+                    if (SpawnImpactSpark)
+                    {
+                        SpaceEffectAssets.PlayPierceEffect(hit.point, Caliber);
+                    }
+                    Destroy(gameObject);
+                    return;
+                }
+
                 // Not a penetrable target: a plain ship block passes straight through, anything
-                // else (terrain / static geometry) hard-stops the round.
-                if (hit.collider.GetComponentInParent<BlockBehaviour>() != null)
+                // else (terrain / static geometry) hard-stops the round — except an unrecognized
+                // trigger collider (e.g. the spectator camera's own collider), which isn't real
+                // geometry at all and the round should simply fly through.
+                if (hit.collider.GetComponentInParent<BlockBehaviour>() != null
+                    || SpaceCombatUtil.IsUnrecognizedObstacle(hit.collider))
                 {
                     continue;
                 }
@@ -961,6 +1250,95 @@ namespace BeyondSpiderAssembly
         private static int CompareHitDistance(RaycastHit a, RaycastHit b)
         {
             return a.distance.CompareTo(b.distance);
+        }
+
+        // Client mirror flight: same sweep, but no damage, no penetration continuation, no
+        // knockback — it decides where the round visually stops or bounces. Pass through breached
+        // targets and plain ship blocks exactly like the host march (breach state arrives via the
+        // host's armor batches, which keeps the pass-through honest over time). Ricochets ARE
+        // rolled here, with the client's own Random (user decision: no host sync — the mirror's
+        // bounce may diverge from the authoritative round's fate, accepted for the visual), using
+        // the shared RollRicochet gate and ApplyRicochetKinematics bounce.
+        private void ClientVisualMarch(Vector3 dir, float sweep)
+        {
+            RaycastHit[] hits = Physics.RaycastAll(transform.position, dir, sweep);
+            if (hits == null || hits.Length == 0)
+            {
+                return;
+            }
+            System.Array.Sort(hits, CompareHitDistance);
+            for (int i = 0; i < hits.Length; i++)
+            {
+                RaycastHit hit = hits[i];
+                if (hit.collider == null)
+                {
+                    continue;
+                }
+
+                IKineticTarget target = hit.collider.GetComponentInParent<IKineticTarget>();
+                if (target != null)
+                {
+                    if (target.IsBreached)
+                    {
+                        continue;
+                    }
+                    if (TryClientRicochet(target, hit))
+                    {
+                        return; // bounced — redirected and flying on; this tick's march ends
+                    }
+                }
+                else if (hit.collider.GetComponentInParent<BlockBehaviour>() != null
+                    && hit.collider.GetComponentInParent<SpaceShipCore>() == null
+                    && hit.collider.GetComponentInParent<SuperCapacitorBlock>() == null)
+                {
+                    continue;
+                }
+                else if (SpaceCombatUtil.IsUnrecognizedObstacle(hit.collider))
+                {
+                    continue; // e.g. the spectator camera's own collider — not real geometry
+                }
+
+                // First standing penetrable target, reactor/capacitor (the host detonates it; this
+                // is only the visual stop so the mirror round doesn't sail through), or hard
+                // geometry.
+                if (SpawnImpactSpark)
+                {
+                    SpaceEffectAssets.PlayPierceEffect(hit.point, Caliber);
+                }
+                Destroy(gameObject);
+                return;
+            }
+        }
+
+        // The client-side visual ricochet: same order of resolution as the host's ResolveTarget —
+        // a round that would have punched through (budget >= remaining HP, meaningful on clients
+        // because armor pools are net-synced) never bounces there, so it doesn't bounce here
+        // either; otherwise the shared angle-scaled roll decides. No damage is dealt.
+        private bool TryClientRicochet(IKineticTarget target, RaycastHit hit)
+        {
+            if (!target.CanRicochet)
+            {
+                return false;
+            }
+            Vector3 targetVel = target.KineticVelocity;
+            Vector3 relVel = body.velocity - targetVel;
+            float relSpeedSq = relVel.sqrMagnitude;
+            if (relSpeedSq <= 0.0001f)
+            {
+                return false;
+            }
+            float budget = MassEstimate * relSpeedSq * VelocityDamageCoefficient;
+            float hp = target.RemainingKineticHP;
+            if (hp > 0f && budget >= hp)
+            {
+                return false;
+            }
+            if (!RollRicochet(relVel, Mathf.Sqrt(relSpeedSq), hit.normal))
+            {
+                return false;
+            }
+            ApplyRicochetKinematics(targetVel, relVel, budget * SpaceBalance.RicochetKEKeep, hit);
+            return true;
         }
 
         // Physical push in the round's own travel direction, applied at the exact impact point —
@@ -987,6 +1365,12 @@ namespace BeyondSpiderAssembly
         // in the target's rest frame: budget D = mass * |v_rel|^2 * coeff (ADR-0007).
         private HitOutcome ResolveTarget(IKineticTarget target, RaycastHit hit)
         {
+            // Unreachable on clients (FixedUpdate branches to ClientVisualMarch first) — defense
+            // in depth for the MP damage rule.
+            if (!NetAuthority.IsAuthority)
+            {
+                return HitOutcome.Continue;
+            }
             Vector3 targetVel = target.KineticVelocity;
             Vector3 relVel = body.velocity - targetVel;
             float relSpeedSq = relVel.sqrMagnitude;
@@ -1012,21 +1396,11 @@ namespace BeyondSpiderAssembly
             }
 
             // Did not penetrate. Armour at a steep incidence may ricochet; everything else embeds.
-            if (target.CanRicochet && relSpeedSq > 0.0001f)
+            if (target.CanRicochet && relSpeedSq > 0.0001f
+                && RollRicochet(relVel, Mathf.Sqrt(relSpeedSq), hit.normal))
             {
-                float relSpeed = Mathf.Sqrt(relSpeedSq);
-                float cosIncidence = Mathf.Clamp01(Mathf.Abs(Vector3.Dot(relVel / relSpeed, hit.normal)));
-                float angleDeg = Mathf.Acos(cosIncidence) * Mathf.Rad2Deg;
-                if (angleDeg > SpaceBalance.RicochetMinAngleDeg)
-                {
-                    float t = Mathf.Clamp01((angleDeg - SpaceBalance.RicochetMinAngleDeg) /
-                                            (90f - SpaceBalance.RicochetMinAngleDeg));
-                    if (Random.value < t * SpaceBalance.RicochetMaxProbability)
-                    {
-                        Ricochet(target, hit, targetVel, relVel, budget, coeff);
-                        return HitOutcome.Ricochet;
-                    }
-                }
+                Ricochet(target, hit, targetVel, relVel, budget);
+                return HitOutcome.Ricochet;
             }
 
             // Embed: dump all remaining KE into the target as damage, round is spent.
@@ -1052,13 +1426,38 @@ namespace BeyondSpiderAssembly
         // A ricochet deposits only part of the surrendered budget as damage, keeps a small residual
         // reflected off the surface, and dissipates the rest — the one place KE lost exceeds damage
         // dealt (ADR-0007).
-        private void Ricochet(IKineticTarget target, RaycastHit hit, Vector3 targetVel, Vector3 relVel, float budget, float coeff)
+        private void Ricochet(IKineticTarget target, RaycastHit hit, Vector3 targetVel, Vector3 relVel, float budget)
         {
             float residualBudget = budget * SpaceBalance.RicochetKEKeep;
             float damage = (budget - residualBudget) * SpaceBalance.RicochetDamageFraction;
             target.ApplyKineticDamage(damage);
+            ApplyRicochetKinematics(targetVel, relVel, residualBudget, hit);
+        }
 
-            float residualRelSpeed = Mathf.Sqrt(Mathf.Max(0f, residualBudget) / Mathf.Max(1e-6f, MassEstimate * coeff));
+        // Angle-scaled ricochet roll (ADR-0007): only past RicochetMinAngleDeg, likelier the more
+        // oblique. Rolled with whichever machine's Random asks — the host's authoritative march and
+        // the client's visual march each roll their own (a mirror's bounce needn't match the real
+        // round's fate; user decision).
+        private static bool RollRicochet(Vector3 relVel, float relSpeed, Vector3 normal)
+        {
+            float cosIncidence = Mathf.Clamp01(Mathf.Abs(Vector3.Dot(relVel / relSpeed, normal)));
+            float angleDeg = Mathf.Acos(cosIncidence) * Mathf.Rad2Deg;
+            if (angleDeg <= SpaceBalance.RicochetMinAngleDeg)
+            {
+                return false;
+            }
+            float t = Mathf.Clamp01((angleDeg - SpaceBalance.RicochetMinAngleDeg) /
+                                    (90f - SpaceBalance.RicochetMinAngleDeg));
+            return Random.value < t * SpaceBalance.RicochetMaxProbability;
+        }
+
+        // Shared bounce kinematics (host Ricochet and the client's visual ricochet): keep the
+        // travel direction reflected off the surface in the target's frame, drop the relative
+        // speed so the remaining relative KE equals residualBudget, add scatter, then hand the
+        // world velocity back with the target's own motion added in — plus the impact spark.
+        private void ApplyRicochetKinematics(Vector3 targetVel, Vector3 relVel, float residualBudget, RaycastHit hit)
+        {
+            float residualRelSpeed = Mathf.Sqrt(Mathf.Max(0f, residualBudget) / Mathf.Max(1e-6f, MassEstimate * VelocityDamageCoefficient));
             Vector3 relDir = relVel.sqrMagnitude > 1e-6f ? relVel.normalized : -hit.normal;
             Vector3 reflected = Vector3.Reflect(relDir, hit.normal).normalized;
             if (SpaceBalance.RicochetScatterDeg > 0f)
@@ -1076,6 +1475,9 @@ namespace BeyondSpiderAssembly
 
         public void ApplyShieldDeceleration(Vector3 newVelocity, float appliedDeltaV)
         {
+            // Deliberately NOT authority-fenced: on the host the authoritative interception loop
+            // calls this; on a client only ShieldProjectorBlock.ClientIntercept does, and slowing a
+            // visual mirror round to match the host's field is display smoothing, not damage.
             if (body == null || appliedDeltaV <= 0f)
             {
                 return;

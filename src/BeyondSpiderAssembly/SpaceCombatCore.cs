@@ -10,7 +10,12 @@ namespace BeyondSpiderAssembly
         Armor = 0,
         Shield = 1,
         Weapon = 2,
-        Universal = 3
+        Universal = 3,
+        // Propulsion (ADR-0018). Deliberately appended AFTER Universal rather than inserted next
+        // to the other three "consumer" buses: the capacitor's Energy Bus menu serializes its
+        // selection as an int, so renumbering Universal would silently re-bus every capacitor in
+        // every saved machine.
+        Thrust = 4
     }
 
     public enum TrackKind
@@ -85,24 +90,53 @@ namespace BeyondSpiderAssembly
         float CurrentMuzzleVelocity();
     }
 
+    // Every weapon's hit resolution (cannon/flak RaycastAll march, missile sweep-fuze raycast,
+    // missile contact-fuze OnTriggerEnter, laser RaycastAll) explicitly recognizes a fixed set of
+    // gameplay hit types first (IKineticTarget armor, MissileProjectile, BlockBehaviour, subsystem
+    // direct-hit) and only then falls back to treating whatever's left as solid terrain/obstacle.
+    // Every trigger collider this mod itself creates for gameplay (missile capsules, the flak
+    // turret's own hitbox) is attached to one of those recognized types and gets caught upstream of
+    // that fallback — solid terrain/hull never uses a trigger collider here. So a collider that is
+    // still a trigger by the time a caller reaches the fallback isn't real geometry at all (most
+    // commonly Besiege's own free-camera rig, which carries a collider unrelated to this mod); treat
+    // it as empty space instead of stopping/detonating on it. Callers must only call this AFTER
+    // ruling out the recognized types — calling it up front would also skip legitimate hits on
+    // missile capsules and the like.
+    public static class SpaceCombatUtil
+    {
+        public static bool IsUnrecognizedObstacle(Collider collider)
+        {
+            return collider != null && collider.isTrigger;
+        }
+    }
+
     public sealed class EnergyGrid
     {
-        private readonly float[] capacitor = new float[4];
-        private readonly float[] capacity = new float[4];
-        private readonly float[] previousCapacity = new float[4];
-        private readonly float[] reactorShare = new float[4];
-        private readonly float[] spentThisSecond = new float[4];
+        public const int BusCount = 5;
+
+        // Propulsion may only borrow from the Universal pool while Universal is above this
+        // fraction (ADR-0018: "thrust has the lowest discharge priority"). Weapons and shields
+        // keep an untouchable reserve, so a ship under fire loses maneuvering before it loses
+        // guns — a dramatic normal state, not an error.
+        private const float ThrustUniversalReserve = 0.25f;
+
+        private readonly float[] capacitor = new float[BusCount];
+        private readonly float[] capacity = new float[BusCount];
+        private readonly float[] previousCapacity = new float[BusCount];
+        private readonly float[] reactorShare = new float[BusCount];
+        private readonly float[] spentThisSecond = new float[BusCount];
 
         public float ReactorOutput;
 
-        public void Configure(float totalPower, float armorPowerShare, float shieldPowerShare, float weaponPowerShare)
+        public void Configure(float totalPower, float armorPowerShare, float shieldPowerShare, float weaponPowerShare, float thrustPowerShare)
         {
             ReactorOutput = Mathf.Max(0f, totalPower);
-            float sum = Mathf.Max(0.001f, armorPowerShare + shieldPowerShare + weaponPowerShare);
+            float sum = Mathf.Max(0.001f, armorPowerShare + shieldPowerShare + weaponPowerShare + thrustPowerShare);
             reactorShare[(int)EnergyBus.Armor] = armorPowerShare / sum;
             reactorShare[(int)EnergyBus.Shield] = shieldPowerShare / sum;
             reactorShare[(int)EnergyBus.Weapon] = weaponPowerShare / sum;
             reactorShare[(int)EnergyBus.Universal] = 0f;
+            reactorShare[(int)EnergyBus.Thrust] = thrustPowerShare / sum;
         }
 
         public void ClearCapacitors()
@@ -139,7 +173,8 @@ namespace BeyondSpiderAssembly
             }
             float overflow = Charge(EnergyBus.Armor, ReactorOutput * reactorShare[0] * deltaTime)
                            + Charge(EnergyBus.Shield, ReactorOutput * reactorShare[1] * deltaTime)
-                           + Charge(EnergyBus.Weapon, ReactorOutput * reactorShare[2] * deltaTime);
+                           + Charge(EnergyBus.Weapon, ReactorOutput * reactorShare[2] * deltaTime)
+                           + Charge(EnergyBus.Thrust, ReactorOutput * reactorShare[4] * deltaTime);
             if (overflow > 0f)
             {
                 Charge(EnergyBus.Universal, overflow);
@@ -157,7 +192,7 @@ namespace BeyondSpiderAssembly
             float supplied = Draw(bus, amount);
             if (bus != EnergyBus.Universal && supplied < amount)
             {
-                supplied += Draw(EnergyBus.Universal, amount - supplied);
+                supplied += Draw(EnergyBus.Universal, amount - supplied, UniversalFloorFor(bus));
             }
 
             spentThisSecond[(int)bus] += supplied;
@@ -175,9 +210,20 @@ namespace BeyondSpiderAssembly
             float available = capacitor[(int)bus];
             if (bus != EnergyBus.Universal)
             {
-                available += capacitor[(int)EnergyBus.Universal];
+                available += Mathf.Max(0f, capacitor[(int)EnergyBus.Universal] - UniversalFloorFor(bus));
             }
             return available >= amount;
+        }
+
+        // How much of the Universal pool a bus may NOT touch. Zero for everyone except Thrust,
+        // which is the designed first casualty of a power shortfall (ADR-0018).
+        private float UniversalFloorFor(EnergyBus bus)
+        {
+            if (bus != EnergyBus.Thrust)
+            {
+                return 0f;
+            }
+            return capacity[(int)EnergyBus.Universal] * ThrustUniversalReserve;
         }
 
         public float ChargeLevel(EnergyBus bus)
@@ -211,8 +257,14 @@ namespace BeyondSpiderAssembly
 
         private float Draw(EnergyBus bus, float amount)
         {
+            return Draw(bus, amount, 0f);
+        }
+
+        private float Draw(EnergyBus bus, float amount, float floor)
+        {
             int index = (int)bus;
-            float supplied = Mathf.Min(capacitor[index], amount);
+            float drawable = Mathf.Max(0f, capacitor[index] - floor);
+            float supplied = Mathf.Min(drawable, amount);
             capacitor[index] -= supplied;
             return supplied;
         }
@@ -252,6 +304,33 @@ namespace BeyondSpiderAssembly
         public readonly List<NanoArmorBehaviour> Armor = new List<NanoArmorBehaviour>();
         public readonly List<MissileLauncherBlock> Launchers = new List<MissileLauncherBlock>();
         public readonly List<SpaceGunnerBlock> Gunners = new List<SpaceGunnerBlock>();
+        // Propulsion (ADR-0018). Thrusters in "advanced control" mode are driven as a group by the
+        // 6-DOF allocator below; the rest run off their own keys. Sorted by BuildingBlock.Guid so
+        // host and clients agree on each thruster's slot index in the output batch (ThrusterNet).
+        public readonly List<ThrusterBlock> Thrusters = new List<ThrusterBlock>();
+        public readonly ThrustAllocator Allocator = new ThrustAllocator();
+        // Every block the tick-3 partition put in this ship — the allocator needs it to find the
+        // hull's live center of mass, which no other subsystem cared about before.
+        public readonly List<BlockBehaviour> Blocks = new List<BlockBehaviour>();
+        // The captain's driving command, in the captain's own axes, each component in [-1, 1]
+        // (ADR-0018 §4 mapping: x = right, y = forward "up/down", z = up "fore/aft").
+        // Host-authored in SP; on an MP client the local captain sends it up via ThrusterNet.DriveMsg.
+        public Vector3 DriveTranslation;
+        public Vector3 DriveRotation;
+        // Attitude stabilizer: rotation runs as a rate loop that auto-nulls spin when released.
+        // Off means fully open-loop on all six axes (ADR-0018 §5).
+        public bool AttitudeHold = true;
+        // Propulsion emergency cutoff — every thruster on the ship goes dark.
+        public bool ThrustCutoff;
+        // Distinct hull rigidbodies, cached so the per-tick center-of-mass doesn't sweep a
+        // GetComponent<Rigidbody> over every block — the one non-trivial cost in the propulsion
+        // tick (ADR-0018). The LIST is rebuilt once a second (that GetComponent sweep, plus the
+        // weld-cluster dedup); COM and mass are recomputed fresh EVERY tick from it, so they track
+        // the ship moving, flexing and losing blocks immediately (a destroyed body reads as Unity-
+        // null and drops out) — only a change in which rigidbodies exist waits up to a second.
+        public readonly List<Rigidbody> ThrustBodies = new List<Rigidbody>();
+        public float NextBodyRefresh;
+        public bool BodiesValid;
         public readonly List<SensorTrack> Tracks = new List<SensorTrack>();
         // Multi-channel fire control (ADR-0010): one independent lock per fire channel.
         // Channel 0 is the air-defence channel (captain auto-locks the highest closing threat,
@@ -274,6 +353,53 @@ namespace BeyondSpiderAssembly
         // threat selection pauses until the lock is cleared or its target dies.
         public bool Channel0ManualLock;
         public float LastRefreshTime;
+
+        // MP display sync (ShipEnergyNet): energy is spent host-only, so a client's local grid
+        // drifts toward 100%. The host streams the four bus charge levels; client info panels read
+        // them through DisplayChargeLevel while fresh, falling back to the local grid otherwise.
+        public readonly float[] NetEnergyLevels = new float[EnergyGrid.BusCount];
+        public float NetEnergyTime = -999f;
+        internal float NextEnergySync;
+        internal float NextThrustSync;
+        // Suppresses the propulsion output stream while the whole ship is coasting and the clients
+        // already know it (ThrusterNet.BroadcastOutputs) — the common case in flight.
+        internal bool ThrustWasIdle;
+
+        public float DisplayChargeLevel(EnergyBus bus)
+        {
+            if (NetAuthority.IsClient && Time.time - NetEnergyTime < 1f)
+            {
+                return NetEnergyLevels[(int)bus];
+            }
+            return Energy.ChargeLevel(bus);
+        }
+    }
+
+    // MP replication of per-ship energy display state (host → clients, 0.25 s per ship). Pure
+    // display: clients never spend or charge authoritatively — this only keeps the capacitor bars
+    // honest. Ships are addressed by PlayerID + CoreGuidHash (ADR-0011 multi-ship identity).
+    public class ShipEnergyNet : SingleInstance<ShipEnergyNet>
+    {
+        public override string Name { get { return "BeyondSpider Ship Energy Net"; } }
+
+        // (playerId, coreGuidHash, armorLevel, shieldLevel, weaponLevel, universalLevel, thrustLevel)
+        public static MessageType EnergyMsg = ModNetworking.CreateMessageType(
+            DataType.Integer, DataType.Integer, DataType.Single, DataType.Single, DataType.Single, DataType.Single, DataType.Single);
+
+        public void EnergyReceiver(Message msg)
+        {
+            ShipState ship = SpaceCombatRegistry.FindShip((int)msg.GetData(0), (int)msg.GetData(1));
+            if (ship == null)
+            {
+                return;
+            }
+            ship.NetEnergyLevels[(int)EnergyBus.Armor] = (float)msg.GetData(2);
+            ship.NetEnergyLevels[(int)EnergyBus.Shield] = (float)msg.GetData(3);
+            ship.NetEnergyLevels[(int)EnergyBus.Weapon] = (float)msg.GetData(4);
+            ship.NetEnergyLevels[(int)EnergyBus.Universal] = (float)msg.GetData(5);
+            ship.NetEnergyLevels[(int)EnergyBus.Thrust] = (float)msg.GetData(6);
+            ship.NetEnergyTime = Time.time;
+        }
     }
 
     public static class SpaceCombatRegistry
@@ -297,9 +423,18 @@ namespace BeyondSpiderAssembly
             get { return ships; }
         }
 
+        // The local player's network id, null-hardened. PlayerData.localPlayer CAN be null while
+        // StatMaster.isMP is still true — observed as a 1300-deep NRE spam from every per-frame
+        // UI consumer (radar view, info panel) after a session disconnect, killing their whole
+        // Update/OnGUI each frame. Treat "no local player" as id 0 (the host's id, also the SP
+        // value) instead of throwing.
         public static int LocalPlayerId()
         {
-            return StatMaster.isMP ? PlayerData.localPlayer.networkId : 0;
+            if (!StatMaster.isMP || PlayerData.localPlayer == null)
+            {
+                return 0;
+            }
+            return PlayerData.localPlayer.networkId;
         }
 
         // Which of the local player's ships the HUD (info-panel tabs + captain radar) currently
@@ -512,6 +647,11 @@ namespace BeyondSpiderAssembly
         public static bool ShowArmorHP;
 
         private readonly Rect window = new Rect(14f, 80f, 330f, 420f);
+        // MP diagnosis (no-combat energy-zero bug): one census line per ship every 5 s, showing
+        // exactly which ingredient of the grid is missing (dead core skips the tick entirely;
+        // missing/dead capacitors leave capacity at 0, which ChargeLevel reports as an exact 0%).
+        private float nextEnergyCensus;
+        private const float EnergyCensusInterval = 5f;
 
         private void FixedUpdate()
         {
@@ -530,7 +670,7 @@ namespace BeyondSpiderAssembly
                 for (int i = 0; i < ship.Capacitors.Count; i++)
                 {
                     SuperCapacitorBlock capacitor = ship.Capacitors[i];
-                    if (capacitor != null)
+                    if (capacitor != null && capacitor.IsAlive)
                     {
                         ship.Energy.AddCapacity(capacitor.Bus, capacitor.Capacity);
                     }
@@ -550,8 +690,59 @@ namespace BeyondSpiderAssembly
                 ship.Energy.Configure(totalPower,
                     ship.Core.ArmorPowerShare.Value,
                     ship.Core.ShieldPowerShare.Value,
-                    ship.Core.WeaponPowerShare.Value);
+                    ship.Core.WeaponPowerShare.Value,
+                    ship.Core.ThrustPowerShare.Value);
                 ship.Energy.Tick(Time.fixedDeltaTime);
+
+                // Propulsion (ADR-0018) is solved and applied per SHIP, not per block: the 6-DOF
+                // allocator has to see every enrolled thruster at once to split one commanded
+                // wrench between them. Host-only — a client's thrusters never touch AddForce
+                // (ADR-0015), they only render the outputs the host streams back.
+                if (NetAuthority.IsAuthority)
+                {
+                    ShipThrustControl.Tick(ship, Time.fixedDeltaTime);
+                }
+
+                // Energy display stream to clients (see ShipEnergyNet) — only the host's grid sees
+                // real consumption, so it's the one whose levels are worth showing.
+                if (StatMaster.isMP && NetAuthority.IsAuthority && Time.time >= ship.NextEnergySync)
+                {
+                    ship.NextEnergySync = Time.time + 0.25f;
+                    ModNetworking.SendToAll(ShipEnergyNet.EnergyMsg.CreateMessage(
+                        ship.PlayerID, ship.CoreGuidHash,
+                        ship.Energy.ChargeLevel(EnergyBus.Armor),
+                        ship.Energy.ChargeLevel(EnergyBus.Shield),
+                        ship.Energy.ChargeLevel(EnergyBus.Weapon),
+                        ship.Energy.ChargeLevel(EnergyBus.Universal),
+                        ship.Energy.ChargeLevel(EnergyBus.Thrust)));
+                }
+            }
+
+            if (Time.time >= nextEnergyCensus)
+            {
+                nextEnergyCensus = Time.time + EnergyCensusInterval;
+                string role = !StatMaster.isMP ? "sp" : (StatMaster.isClient ? "client" : "host");
+                foreach (ShipState ship in SpaceCombatRegistry.Ships)
+                {
+                    int capsAlive = 0;
+                    for (int i = 0; i < ship.Capacitors.Count; i++)
+                    {
+                        if (ship.Capacitors[i] != null && ship.Capacitors[i].IsAlive)
+                        {
+                            capsAlive++;
+                        }
+                    }
+                    Debug.Log("[BeyondSpider] energy census (" + role + "): ship P" + ship.PlayerID
+                        + ":" + ship.CoreGuidHash
+                        + " coreAlive=" + (ship.Core != null && ship.Core.IsAlive)
+                        + " cores=" + ship.Cores.Count
+                        + " caps=" + capsAlive + "/" + ship.Capacitors.Count
+                        + " reactor=" + ship.Energy.ReactorOutput.ToString("F0")
+                        + " capW=" + ship.Energy.Capacity(EnergyBus.Weapon).ToString("F0")
+                        + " capU=" + ship.Energy.Capacity(EnergyBus.Universal).ToString("F0")
+                        + " W=" + (ship.Energy.ChargeLevel(EnergyBus.Weapon) * 100f).ToString("F0") + "%"
+                        + " U=" + (ship.Energy.ChargeLevel(EnergyBus.Universal) * 100f).ToString("F0") + "%");
+                }
             }
         }
 
@@ -565,7 +756,7 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
-            int localPlayer = StatMaster.isMP ? PlayerData.localPlayer.networkId : 0;
+            int localPlayer = SpaceCombatRegistry.LocalPlayerId();
             ShipState ship = SpaceCombatRegistry.FindShip(localPlayer);
             if (ship == null || ship.Core == null)
             {
@@ -579,14 +770,16 @@ namespace BeyondSpiderAssembly
                 GUILayout.Label("Captain IFF: " + (ship.Captain.Iff.IsActive ? "on" : "off"));
             }
             GUILayout.Label("Total power MW: " + ship.Energy.ReactorOutput.ToString("0"));
-            GUILayout.Label("Power share A/S/W: " + FormatPowerShare(ship, EnergyBus.Armor)
+            GUILayout.Label("Power share A/S/W/T: " + FormatPowerShare(ship, EnergyBus.Armor)
                 + " / " + FormatPowerShare(ship, EnergyBus.Shield)
-                + " / " + FormatPowerShare(ship, EnergyBus.Weapon));
-            GUILayout.Label("Cap A/S/W/U: "
+                + " / " + FormatPowerShare(ship, EnergyBus.Weapon)
+                + " / " + FormatPowerShare(ship, EnergyBus.Thrust));
+            GUILayout.Label("Cap A/S/W/U/T: "
                 + FormatBus(ship, EnergyBus.Armor) + " / "
                 + FormatBus(ship, EnergyBus.Shield) + " / "
                 + FormatBus(ship, EnergyBus.Weapon) + " / "
-                + FormatBus(ship, EnergyBus.Universal));
+                + FormatBus(ship, EnergyBus.Universal) + " / "
+                + FormatBus(ship, EnergyBus.Thrust));
             GUILayout.Label("Tracks: " + ship.Tracks.Count + "  Shields: " + ship.Shields.Count);
             GUILayout.Label("Armor blocks: " + ship.Armor.Count + "  " + FormatArmor(ship));
             ShowArmorHP = GUILayout.Toggle(ShowArmorHP, "Show Armor HP");
@@ -597,7 +790,7 @@ namespace BeyondSpiderAssembly
 
         private static string FormatBus(ShipState ship, EnergyBus bus)
         {
-            return (ship.Energy.ChargeLevel(bus) * 100f).ToString("0") + "%";
+            return (ship.DisplayChargeLevel(bus) * 100f).ToString("0") + "%";
         }
 
         private static string FormatPowerShare(ShipState ship, EnergyBus bus)
@@ -610,7 +803,8 @@ namespace BeyondSpiderAssembly
             float armor = ship.Core.ArmorPowerShare.Value;
             float shield = ship.Core.ShieldPowerShare.Value;
             float weapon = ship.Core.WeaponPowerShare.Value;
-            float total = Mathf.Max(0.001f, armor + shield + weapon);
+            float thrust = ship.Core.ThrustPowerShare.Value;
+            float total = Mathf.Max(0.001f, armor + shield + weapon + thrust);
 
             switch (bus)
             {
@@ -620,6 +814,8 @@ namespace BeyondSpiderAssembly
                     return (shield / total * 100f).ToString("0") + "%";
                 case EnergyBus.Weapon:
                     return (weapon / total * 100f).ToString("0") + "%";
+                case EnergyBus.Thrust:
+                    return (thrust / total * 100f).ToString("0") + "%";
                 default:
                     return "0%";
             }

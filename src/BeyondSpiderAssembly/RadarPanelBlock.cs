@@ -60,7 +60,29 @@ namespace BeyondSpiderAssembly
             registered = false;
         }
 
+        // The scan must run on host AND clients (MP rule: it is display-side — it only reads the
+        // local trackable registry, populated identically on clients, and writes the local
+        // ship.Tracks the captain's radar view renders; without it a client's radar is empty).
+        // NOT via SimulateFixedUpdateAlways: the engine does not dispatch the fixed-step Simulate
+        // hooks on network clients at all (first MP playtest: client tracks stayed empty; both
+        // reference mods roll their own — WW2-Naval's MySimulateFixedUpdateAlways is called from a
+        // plain FixedUpdate for exactly this reason). Host/SP drive it from SimulateFixedUpdateHost,
+        // clients from the isClient-gated FixedUpdate below — the same split every other block in
+        // this codebase uses for client-side fixed-step work.
         public override void SimulateFixedUpdateHost()
+        {
+            ScanTick();
+        }
+
+        private void FixedUpdate()
+        {
+            if (BlockBehaviour != null && BlockBehaviour.isSimulating && StatMaster.isClient)
+            {
+                ScanTick();
+            }
+        }
+
+        private void ScanTick()
         {
             ShipState ship = OwnShip();
             if (ship != null && !registered)

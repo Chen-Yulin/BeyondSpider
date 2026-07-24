@@ -11,6 +11,37 @@ namespace BeyondSpiderAssembly
         // MText can't change mid-simulation (see the guide's 输入采样规则).
         public MText ShipName;
 
+        // Helm (ADR-0018 §4): three translation axes and three rotation axes, two keys each, plus
+        // the attitude stabilizer and the propulsion emergency cutoff. Fourteen bindings on one
+        // block is a lot, but the gunner already carries five including four directional ones, and
+        // keeping them here means a ship needs exactly one command block rather than two.
+        //
+        // Axis mapping is the captain block's own frame: the block sits flat on the deck, so its
+        // up points along the hull (fore/aft) and its forward points out of the deck (up/down).
+        public MKey StrafeRightKey;
+        public MKey StrafeLeftKey;
+        public MKey AscendKey;
+        public MKey DescendKey;
+        public MKey ForwardKey;
+        public MKey ReverseKey;
+        public MKey PitchUpKey;
+        public MKey PitchDownKey;
+        public MKey YawRightKey;
+        public MKey YawLeftKey;
+        public MKey RollRightKey;
+        public MKey RollLeftKey;
+        public MKey StabilizerKey;
+        public MKey ThrustCutoffKey;
+
+        // Toggle state owned by whoever is flying; mirrored onto the ship each tick (and up to the
+        // host in MP). Stabilizer defaults on — an unassisted ship tumbles forever after one tap.
+        private bool attitudeHold = true;
+        private bool thrustCutoff;
+        private Vector3 lastSentTranslation = Vector3.one * -99f;
+        private Vector3 lastSentRotation = Vector3.one * -99f;
+        private bool lastSentHold;
+        private bool lastSentCutoff;
+
         private const float FireControlPositionBucket = 10f;
         private const float FireControlVelocityBucket = 10f;
 
@@ -83,6 +114,20 @@ namespace BeyondSpiderAssembly
             gameObject.name = "BeyondSpider Captain";
             Iff = AddToggle("IFF", "BSCaptainIFF", true);
             ShipName = AddText("Ship Name", "BSCaptainShipName", "");
+            StrafeRightKey = AddKey("Strafe Right", "BSHelmStrafeRight", KeyCode.None);
+            StrafeLeftKey = AddKey("Strafe Left", "BSHelmStrafeLeft", KeyCode.None);
+            AscendKey = AddKey("Ascend", "BSHelmAscend", KeyCode.None);
+            DescendKey = AddKey("Descend", "BSHelmDescend", KeyCode.None);
+            ForwardKey = AddKey("Thrust Forward", "BSHelmForward", KeyCode.None);
+            ReverseKey = AddKey("Thrust Reverse", "BSHelmReverse", KeyCode.None);
+            PitchUpKey = AddKey("Pitch Up", "BSHelmPitchUp", KeyCode.None);
+            PitchDownKey = AddKey("Pitch Down", "BSHelmPitchDown", KeyCode.None);
+            YawRightKey = AddKey("Yaw Right", "BSHelmYawRight", KeyCode.None);
+            YawLeftKey = AddKey("Yaw Left", "BSHelmYawLeft", KeyCode.None);
+            RollRightKey = AddKey("Roll Right", "BSHelmRollRight", KeyCode.None);
+            RollLeftKey = AddKey("Roll Left", "BSHelmRollLeft", KeyCode.None);
+            StabilizerKey = AddKey("Toggle Attitude Hold", "BSHelmStabilizer", KeyCode.None);
+            ThrustCutoffKey = AddKey("Thrust Cutoff", "BSHelmCutoff", KeyCode.None);
         }
 
         // The captain's Ship Name text, trimmed; "" when the player left it blank (the ship then
@@ -125,12 +170,101 @@ namespace BeyondSpiderAssembly
 
         // Claim-if-vacant, never steal: the partition already assigned each ship its
         // deterministic captain, and two captains on one hull must not fight over the seat every
-        // tick. Runs on host and clients alike (this hook, unlike the Host one, ticks on
-        // clients too) so a captain placed mid-simulation seats itself everywhere.
-        public override void SimulateFixedUpdateAlways()
+        // tick. Must run on host and clients alike so a captain placed mid-simulation (or a spare
+        // taking over a vacated seat) seats itself everywhere — driven from a plain FixedUpdate
+        // because the engine does NOT dispatch the fixed-step Simulate hooks on network clients
+        // (first MP playtest; same reason RadarPanelBlock self-drives its scan). Idempotent, so
+        // also running alongside SimulateFixedUpdateHost on the host is harmless.
+        private void FixedUpdate()
         {
-            base.SimulateFixedUpdateAlways();
-            TryClaimShip();
+            if (BlockBehaviour != null && BlockBehaviour.isSimulating)
+            {
+                TryClaimShip();
+                SampleHelm();
+            }
+        }
+
+        // The two helm TOGGLES are edge-triggered, so they're read in Update rather than the fixed
+        // step — a tap between two fixed ticks must not be swallowed (same convention as the
+        // shield's power key and the turrets' active switch).
+        private void Update()
+        {
+            if (BlockBehaviour == null || !BlockBehaviour.isSimulating || !IsHelmOperator())
+            {
+                return;
+            }
+            if (StabilizerKey != null && StabilizerKey.IsPressed)
+            {
+                attitudeHold = !attitudeHold;
+            }
+            if (ThrustCutoffKey != null && ThrustCutoffKey.IsPressed)
+            {
+                thrustCutoff = !thrustCutoff;
+            }
+        }
+
+        // Reads the twelve driving keys into the ship's command vector. On the host that lands
+        // straight in ShipState; on an MP client the host owns all physics (ADR-0015), so only the
+        // intent travels — and only when it changes, so a coasting ship costs nothing.
+        //
+        // IsHelmOperator is what stops the host's own keyboard from flying every remote player's
+        // ship: input is read only on the machine that actually owns this captain.
+        private void SampleHelm()
+        {
+            ShipState ship = OwnShip();
+            if (ship == null || !ReferenceEquals(ship.Captain, this) || !IsHelmOperator())
+            {
+                return;
+            }
+
+            Vector3 translation = new Vector3(
+                Axis(StrafeRightKey, StrafeLeftKey),
+                Axis(AscendKey, DescendKey),
+                Axis(ForwardKey, ReverseKey));
+            Vector3 rotation = new Vector3(
+                Axis(PitchUpKey, PitchDownKey),
+                Axis(YawRightKey, YawLeftKey),
+                Axis(RollRightKey, RollLeftKey));
+
+            if (NetAuthority.IsAuthority)
+            {
+                ship.DriveTranslation = translation;
+                ship.DriveRotation = rotation;
+                ship.AttitudeHold = attitudeHold;
+                ship.ThrustCutoff = thrustCutoff;
+                return;
+            }
+
+            if (translation == lastSentTranslation && rotation == lastSentRotation
+                && attitudeHold == lastSentHold && thrustCutoff == lastSentCutoff)
+            {
+                return;
+            }
+            lastSentTranslation = translation;
+            lastSentRotation = rotation;
+            lastSentHold = attitudeHold;
+            lastSentCutoff = thrustCutoff;
+            ModNetworking.SendToAll(ThrusterNet.DriveMsg.CreateMessage(
+                PlayerID, ship.CoreGuidHash, translation, rotation, attitudeHold, thrustCutoff));
+        }
+
+        private bool IsHelmOperator()
+        {
+            return ThrusterNet.IsLocallyOwned(BlockBehaviour);
+        }
+
+        private static float Axis(MKey positive, MKey negative)
+        {
+            float value = 0f;
+            if (positive != null && positive.IsHeld)
+            {
+                value += 1f;
+            }
+            if (negative != null && negative.IsHeld)
+            {
+                value -= 1f;
+            }
+            return value;
         }
 
         private void TryClaimShip()

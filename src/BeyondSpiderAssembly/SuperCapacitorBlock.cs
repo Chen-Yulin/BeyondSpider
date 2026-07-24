@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Modding;
 using Modding.Blocks;
 using UnityEngine;
 
@@ -20,12 +21,17 @@ namespace BeyondSpiderAssembly
         // See agent-besiege-mod-guide.md's "注册时序规范" — retried each tick until it
         // succeeds, since ShipState may not exist yet when this OnSimulateStart runs.
         private bool registered;
+        private bool detonated;
+
+        public bool IsAlive { get { return !detonated && BlockBehaviour != null && BlockBehaviour.isSimulating; } }
 
         public override void SafeAwake()
         {
             base.SafeAwake();
             gameObject.name = "BeyondSpider Super Capacitor";
-            BusMenu = AddMenu("Energy Bus", 3, new List<string> { "Armor", "Shield", "Weapon", "Universal" }, false);
+            // Single-select, never a proportional split (ADR-0018): a capacitor's gameplay value is
+            // "which line do I lose when this bank gets shot", and mixing dilutes exactly that.
+            BusMenu = AddMenu("Energy Bus", 3, new List<string> { "Armor", "Shield", "Weapon", "Universal", "Thrust" }, false);
             CapacityInfo = AddInfo("Capacity", "BSCapacityInfo");
             RecomputeCapacity();
         }
@@ -55,7 +61,7 @@ namespace BeyondSpiderAssembly
         public override void OnSimulateStart()
         {
             base.OnSimulateStart();
-            Bus = (EnergyBus)Mathf.Clamp(BusMenu.Value, 0, 3);
+            Bus = (EnergyBus)Mathf.Clamp(BusMenu.Value, 0, EnergyGrid.BusCount - 1);
             RecomputeCapacity();
             ShipState ship = OwnShip();
             if (ship != null)
@@ -96,6 +102,40 @@ namespace BeyondSpiderAssembly
                 SpaceCombatRegistry.RegisterSubsystem(PlayerID, this, ship.Capacitors);
                 registered = true;
             }
+        }
+
+        // Capacitor detonation (damage-refinement spec): a direct hit, or a missile blast with
+        // clear line of sight to this bank (SubsystemDetonation), dumps its whole stored charge at
+        // once — a lightning/ion discharge far beyond ordinary blast damage. Same debris-not-erased
+        // pattern as SpaceShipCore.Detonate(): own joints zeroed + explosion force, IsAlive false
+        // immediately drops it out of SpaceCombatRuntime's capacity sum.
+        public void Detonate()
+        {
+            if (detonated || !NetAuthority.IsAuthority)
+            {
+                return;
+            }
+            detonated = true;
+            // Diagnostic (MP playtest: "ship energy dead" traced to subsystem detonations — dead
+            // capacitors are skipped by the energy tick, so a ship that lost its banks reads 0%).
+            Debug.Log("[BeyondSpider] capacitor DETONATED on player " + PlayerID + " ship ("
+                + Bus + " bank, " + Capacity.ToString("F0") + " MJ) at " + transform.position);
+
+            Vector3 position = transform.position;
+            Vector3 driftVelocity = Body != null ? Body.velocity : Vector3.zero;
+
+            if (StatMaster.isMP)
+            {
+                ModNetworking.SendToAll(SubsystemDetonationNet.DetonateMsg.CreateMessage(
+                    position, driftVelocity, Capacity, 1));
+            }
+
+            SpaceEffectAssets.PlayCapacitorExplosion(position, driftVelocity, Capacity);
+            BreakOwnConnectionJoints();
+            SubsystemDetonation.ApplySecondaryBlast(position,
+                SpaceBalance.CapacitorBlastRadius(Capacity),
+                SpaceBalance.CapacitorBlastDamage(Capacity),
+                SpaceBalance.CapacitorBlastForce(Capacity));
         }
     }
 }

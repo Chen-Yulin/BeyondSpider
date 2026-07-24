@@ -23,6 +23,11 @@ namespace BeyondSpiderAssembly
             // radius, so their closing speed is left uncapped (see the ship-only check at the call
             // site). When false, the governor never fades or brakes — see Steer().
             public bool LimitClosingSpeed;
+            // Extra world-space acceleration folded straight into the steering command alongside
+            // aLat/aLong — e.g. a repulsive bias away from the launching ship's own hull (see
+            // BoxAvoidAccel) so a missile guiding onto a target behind its own ship arcs around the
+            // hull instead of carving through it. Vector3.zero when there's nothing to avoid.
+            public Vector3 AvoidAccel;
         }
 
         // Below this command magnitude the missile neither steers nor burns (coast).
@@ -87,7 +92,7 @@ namespace BeyondSpiderAssembly
                 aLong = p.GovernorGain * p.ClosingSpeedCap;
             }
 
-            Vector3 command = aLat + aLong * rHat;
+            Vector3 command = aLat + aLong * rHat + p.AvoidAccel;
             float commandMag = command.magnitude;
             Vector3 desiredDir = commandMag > 0.0001f ? command / commandMag : tf.forward;
 
@@ -105,10 +110,67 @@ namespace BeyondSpiderAssembly
             return burning;
         }
 
-        // Proximity / closest-approach fuze (ADR-0008). Detonate when inside the hard proximity
-        // radius (plus the target's own radius), or — once inside the arming radius — the instant the
-        // range stops shrinking (range rate R.Vr turns non-negative), which catches a fast fly-by
-        // that would otherwise tunnel through the proximity sphere between ticks.
+        // Repulsive potential field against an oriented box, used to steer a missile around an
+        // obstacle (its own launching ship's hull) instead of straight through it. Returns a
+        // world-space acceleration bias to fold into the steering command: zero beyond `margin`
+        // past the box surface, pointing away from the nearest surface point and ramping up to
+        // `gain` at the surface; when already inside the box (e.g. still clearing the launch rail)
+        // it instead pushes out along whichever face is shallowest to reach, at full `gain`.
+        public static Vector3 BoxAvoidAccel(Vector3 position, Vector3 boxCenter, Quaternion boxRotation, Vector3 halfSize, float margin, float gain)
+        {
+            if (gain <= 0f)
+            {
+                return Vector3.zero;
+            }
+
+            Quaternion toLocal = Quaternion.Inverse(boxRotation);
+            Vector3 localPos = toLocal * (position - boxCenter);
+            Vector3 clamped = new Vector3(
+                Mathf.Clamp(localPos.x, -halfSize.x, halfSize.x),
+                Mathf.Clamp(localPos.y, -halfSize.y, halfSize.y),
+                Mathf.Clamp(localPos.z, -halfSize.z, halfSize.z));
+            Vector3 outward = localPos - clamped;
+            float outwardDist = outward.magnitude;
+
+            Vector3 localDir;
+            float strength;
+            if (outwardDist > 0.0001f)
+            {
+                if (outwardDist >= margin)
+                {
+                    return Vector3.zero;
+                }
+                localDir = outward / outwardDist;
+                strength = gain * (1f - outwardDist / margin);
+            }
+            else
+            {
+                float bestPenetration = float.MaxValue;
+                localDir = Vector3.forward;
+                for (int axis = 0; axis < 3; axis++)
+                {
+                    float penetration = halfSize[axis] - Mathf.Abs(localPos[axis]);
+                    if (penetration < bestPenetration)
+                    {
+                        bestPenetration = penetration;
+                        Vector3 push = Vector3.zero;
+                        push[axis] = localPos[axis] >= 0f ? 1f : -1f;
+                        localDir = push;
+                    }
+                }
+                strength = gain;
+            }
+
+            return (boxRotation * localDir) * strength;
+        }
+
+        // Proximity fuze for point-defense engagements (a shell or another missile): the target is
+        // small and fast enough that waiting for the contact collider to catch it is unreliable, so
+        // this ALSO detonates the instant range drops inside the hard kill radius (fuzeRadius, plus
+        // the target's own body radius) — not just on a miss. Once inside the arming radius, it
+        // additionally self-destructs the instant range stops shrinking (range rate R.Vr turns
+        // non-negative), which catches a fast fly-by that would otherwise tunnel through the kill
+        // radius between ticks. Ship engagements use FlybyTriggered instead — see there for why.
         public static bool FuzeTriggered(Vector3 position, Vector3 velocity, Vector3 targetPosition, Vector3 targetVelocity, float targetRadius, float fuzeRadius, float armingRadius)
         {
             Vector3 R = targetPosition - position;
@@ -117,15 +179,28 @@ namespace BeyondSpiderAssembly
             {
                 return true;
             }
-            if (range <= armingRadius)
+            return FlybyTriggered(position, velocity, targetPosition, targetVelocity, armingRadius);
+        }
+
+        // Miss-only self-destruct for ship engagements. A ship is a large, physically-solid target —
+        // an actual direct hit is always caught by the missile's own contact collider (the sweep
+        // raycast plus OnTriggerEnter) against the real hull, at the real hull surface, so this fuze
+        // must NOT pre-empt a converging approach the way FuzeTriggered's hard-proximity term does
+        // (that term, keyed to a target radius, was going off many meters before the visible hull on
+        // any ship with a scaled-up core — see MissileProjectile history). This only fires once the
+        // closest-approach point has been passed (closing rate flips to opening) while still inside
+        // the arming radius, i.e. once it's clear the shot missed, so a defeated shot self-destructs
+        // in the vicinity instead of coasting on forever.
+        public static bool FlybyTriggered(Vector3 position, Vector3 velocity, Vector3 targetPosition, Vector3 targetVelocity, float armingRadius)
+        {
+            Vector3 R = targetPosition - position;
+            float range = R.magnitude;
+            if (range > armingRadius)
             {
-                Vector3 vr = targetVelocity - velocity;
-                if (Vector3.Dot(R, vr) >= 0f)
-                {
-                    return true;
-                }
+                return false;
             }
-            return false;
+            Vector3 vr = targetVelocity - velocity;
+            return Vector3.Dot(R, vr) >= 0f;
         }
     }
 }

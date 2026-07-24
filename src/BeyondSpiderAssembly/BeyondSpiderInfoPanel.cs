@@ -57,6 +57,8 @@ namespace BeyondSpiderAssembly
         private Image capacitorShieldBar;
         private Image capacitorWeaponBar;
         private Image capacitorUniversalBar;
+        private Image powerShareThrustBar;
+        private Image capacitorThrustBar;
         private Text tracksCountText;
         private Text shieldsCountText;
         private Text armorBlockCountText;
@@ -137,12 +139,14 @@ namespace BeyondSpiderAssembly
             powerShareArmorBar = AddBarRow("PowerShareArmor", "Armor");
             powerShareShieldBar = AddBarRow("PowerShareShield", "Shield");
             powerShareWeaponBar = AddBarRow("PowerShareWeapon", "Weapon");
+            powerShareThrustBar = AddBarRow("PowerShareThrust", "Thrust");
 
             AddSectionLabel("CAPACITOR CHARGE");
             capacitorArmorBar = AddBarRow("CapArmor", "Armor");
             capacitorShieldBar = AddBarRow("CapShield", "Shield");
             capacitorWeaponBar = AddBarRow("CapWeapon", "Weapon");
             capacitorUniversalBar = AddBarRow("CapUniversal", "Universal");
+            capacitorThrustBar = AddBarRow("CapThrust", "Thrust");
 
             tracksCountText = AddTextRow("Tracks", "Tracks: --");
             shieldsCountText = AddTextRow("Shields", "Shields: --");
@@ -438,24 +442,31 @@ namespace BeyondSpiderAssembly
             float armorShare = 0f;
             float shieldShare = 0f;
             float weaponShare = 0f;
+            float thrustShare = 0f;
             if (ship.Core != null)
             {
                 float armor = ship.Core.ArmorPowerShare.Value;
                 float shield = ship.Core.ShieldPowerShare.Value;
                 float weapon = ship.Core.WeaponPowerShare.Value;
-                float total = Mathf.Max(0.001f, armor + shield + weapon);
+                float thrust = ship.Core.ThrustPowerShare.Value;
+                float total = Mathf.Max(0.001f, armor + shield + weapon + thrust);
                 armorShare = armor / total;
                 shieldShare = shield / total;
                 weaponShare = weapon / total;
+                thrustShare = thrust / total;
             }
             powerShareArmorBar.fillAmount = armorShare;
             powerShareShieldBar.fillAmount = shieldShare;
             powerShareWeaponBar.fillAmount = weaponShare;
+            powerShareThrustBar.fillAmount = thrustShare;
 
-            capacitorArmorBar.fillAmount = ship.Energy.ChargeLevel(EnergyBus.Armor);
-            capacitorShieldBar.fillAmount = ship.Energy.ChargeLevel(EnergyBus.Shield);
-            capacitorWeaponBar.fillAmount = ship.Energy.ChargeLevel(EnergyBus.Weapon);
-            capacitorUniversalBar.fillAmount = ship.Energy.ChargeLevel(EnergyBus.Universal);
+            // DisplayChargeLevel, not Energy.ChargeLevel: on MP clients the local grid never sees
+            // consumption (host-only), so the bars read the host's streamed levels while fresh.
+            capacitorArmorBar.fillAmount = ship.DisplayChargeLevel(EnergyBus.Armor);
+            capacitorShieldBar.fillAmount = ship.DisplayChargeLevel(EnergyBus.Shield);
+            capacitorWeaponBar.fillAmount = ship.DisplayChargeLevel(EnergyBus.Weapon);
+            capacitorUniversalBar.fillAmount = ship.DisplayChargeLevel(EnergyBus.Universal);
+            capacitorThrustBar.fillAmount = ship.DisplayChargeLevel(EnergyBus.Thrust);
 
             tracksCountText.text = "Tracks: " + ship.Tracks.Count;
             shieldsCountText.text = "Shields: " + ship.Shields.Count;

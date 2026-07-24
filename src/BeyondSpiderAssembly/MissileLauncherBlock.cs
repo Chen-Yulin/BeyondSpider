@@ -20,7 +20,130 @@ namespace BeyondSpiderAssembly
             DataType.Integer, DataType.Integer, DataType.Integer, DataType.Integer,
             DataType.Vector3, DataType.Vector3, DataType.Vector3, DataType.Integer);
 
+        // The host's in-flight state stream that keeps client mirrors from visually diverging:
+        // mirrors run no guidance of their own (MP rule), they dead-reckon on velocity and smooth
+        // toward these snapshots. ONE message carries every live missile (NanoArmorNet's array
+        // idiom) every 0.05 s — at a 50-missile brawl that's 20 msg/s instead of the 500/s the
+        // earlier per-missile stream would need at this cadence.
+        // ids: interleaved [ownerPlayerId, netId, burning01] per missile;
+        // states: interleaved [px, py, pz, vx, vy, vz] per missile.
+        public static MessageType StateBatchMsg = ModNetworking.CreateMessageType(
+            DataType.IntegerArray, DataType.SingleArray);
+
+        // (ownerPlayerId, missileNetId, blastPos, blastVelocity) — one-shot detonation event; the
+        // mirror plays the fireball at the host's blast point and vanishes. A lost message just
+        // means the mirror coasts to its TTL without a fireball (accepted; no resend machinery).
+        public static MessageType DetonateMsg = ModNetworking.CreateMessageType(
+            DataType.Integer, DataType.Integer, DataType.Vector3, DataType.Vector3);
+
         private readonly Dictionary<string, MissileLauncherBlock> launchers = new Dictionary<string, MissileLauncherBlock>();
+        // In-flight missiles by owner + shared netId (the same identity CaptainLockNet resolves) —
+        // authoritative missiles on the host, mirrors on clients; only the client entries ever
+        // receive, since the host never gets its own broadcasts back.
+        private readonly Dictionary<string, MissileProjectile> missiles = new Dictionary<string, MissileProjectile>();
+
+        public void RegisterMissile(MissileProjectile missile)
+        {
+            missiles[Key(missile.PlayerID, missile.GuidHash)] = missile;
+        }
+
+        public void UnregisterMissile(MissileProjectile missile)
+        {
+            string key = Key(missile.PlayerID, missile.GuidHash);
+            MissileProjectile current;
+            if (missiles.TryGetValue(key, out current) && ReferenceEquals(current, missile))
+            {
+                missiles.Remove(key);
+            }
+        }
+
+        private const float StateBatchInterval = 0.05f;
+        // Chunk ceiling keeps one message ≈1.5 KB worst case; batches chain when a brawl exceeds it.
+        private const int MaxMissilesPerBatch = 40;
+        private float nextStateBatch;
+        private readonly List<MissileProjectile> batchBuffer = new List<MissileProjectile>();
+
+        // Host-side batcher. On the host every registered missile is authoritative (mirrors only
+        // ever exist on clients), so the registry IS the send list.
+        private void FixedUpdate()
+        {
+            if (!StatMaster.isMP || !NetAuthority.IsAuthority || !StatMaster.levelSimulating
+                || missiles.Count == 0 || Time.time < nextStateBatch)
+            {
+                return;
+            }
+            nextStateBatch = Time.time + StateBatchInterval;
+
+            batchBuffer.Clear();
+            foreach (KeyValuePair<string, MissileProjectile> pair in missiles)
+            {
+                MissileProjectile missile = pair.Value;
+                if (missile != null && missile.IsAlive)
+                {
+                    batchBuffer.Add(missile);
+                }
+            }
+
+            int index = 0;
+            while (index < batchBuffer.Count)
+            {
+                int count = Mathf.Min(MaxMissilesPerBatch, batchBuffer.Count - index);
+                int[] ids = new int[count * 3];
+                float[] states = new float[count * 6];
+                for (int i = 0; i < count; i++)
+                {
+                    MissileProjectile missile = batchBuffer[index + i];
+                    ids[i * 3] = missile.PlayerID;
+                    ids[i * 3 + 1] = missile.GuidHash;
+                    ids[i * 3 + 2] = missile.NetBurning ? 1 : 0;
+                    Vector3 position = missile.Position;
+                    Vector3 velocity = missile.Velocity;
+                    states[i * 6] = position.x;
+                    states[i * 6 + 1] = position.y;
+                    states[i * 6 + 2] = position.z;
+                    states[i * 6 + 3] = velocity.x;
+                    states[i * 6 + 4] = velocity.y;
+                    states[i * 6 + 5] = velocity.z;
+                }
+                ModNetworking.SendToAll(StateBatchMsg.CreateMessage(ids, states));
+                index += count;
+            }
+        }
+
+        public void StateBatchReceiver(Message msg)
+        {
+            int[] ids = (int[])msg.GetData(0);
+            float[] states = (float[])msg.GetData(1);
+            if (ids == null || states == null)
+            {
+                return;
+            }
+            int count = ids.Length / 3;
+            if (states.Length < count * 6)
+            {
+                return;
+            }
+            for (int i = 0; i < count; i++)
+            {
+                MissileProjectile missile;
+                if (missiles.TryGetValue(Key(ids[i * 3], ids[i * 3 + 1]), out missile) && missile != null)
+                {
+                    missile.ReceiveNetworkState(
+                        new Vector3(states[i * 6], states[i * 6 + 1], states[i * 6 + 2]),
+                        new Vector3(states[i * 6 + 3], states[i * 6 + 4], states[i * 6 + 5]),
+                        ids[i * 3 + 2] != 0);
+                }
+            }
+        }
+
+        public void DetonateReceiver(Message msg)
+        {
+            MissileProjectile missile;
+            if (missiles.TryGetValue(Key((int)msg.GetData(0), (int)msg.GetData(1)), out missile) && missile != null)
+            {
+                missile.MirrorDetonate((Vector3)msg.GetData(2), (Vector3)msg.GetData(3));
+            }
+        }
 
         public void Register(MissileLauncherBlock launcher)
         {
@@ -390,7 +513,13 @@ namespace BeyondSpiderAssembly
                 transform.forward, MissileLauncherAssets.MissileRange[type], FireChannel.Value, channel0Assignment, null, false);
             if (!manual && target == null)
             {
-                return; // auto-fire lost its target during the open lead — don't spend a cell
+                // Auto-fire lost its target during the open lead — don't spend a cell. Logged
+                // (at most once per door cycle) because "door opens, nothing launches" showed up
+                // in the first MP playtest with no visible cause: this and the energy gate below
+                // are the only silent ways out of a committed launch.
+                Debug.Log("[BeyondSpider] launcher " + PlayerID + ":" + GuidHash
+                    + " aborted launch: auto-fire target lost during door-open lead");
+                return;
             }
 
             // Active-defence energy draw scaled by the 主动-被动防御 macro dial (1 at neutral).
@@ -399,6 +528,15 @@ namespace BeyondSpiderAssembly
                 float cost = MissileLauncherAssets.EnergyPerLaunch[type] * SpaceBalance.ActiveDefenseEnergyScale;
                 if (!ship.Energy.CanSupply(EnergyBus.Weapon, cost))
                 {
+                    // Ship identity + capacity ride along so this line can be matched against the
+                    // energy census: same identity but different numbers would mean this launcher
+                    // pays into a stale ShipState the census/energy loop no longer ticks.
+                    Debug.Log("[BeyondSpider] launcher " + PlayerID + ":" + GuidHash
+                        + " aborted launch: weapon bus can't supply " + cost.ToString("F0")
+                        + " (ship P" + ship.PlayerID + ":" + ship.CoreGuidHash
+                        + ", capW " + ship.Energy.Capacity(EnergyBus.Weapon).ToString("F0")
+                        + ", charge " + (ship.Energy.ChargeLevel(EnergyBus.Weapon) * 100f).ToString("F0") + "%"
+                        + ", universal " + (ship.Energy.ChargeLevel(EnergyBus.Universal) * 100f).ToString("F0") + "%)");
                     return;
                 }
                 ship.Energy.Request(EnergyBus.Weapon, cost);
@@ -486,9 +624,30 @@ namespace BeyondSpiderAssembly
             capsule.radius = MissileLauncherAssets.ColliderRadius(type);
             capsule.height = MissileLauncherAssets.ColliderHeight(type);
             capsule.center = MissileLauncherAssets.ColliderCenter(type);
+            BuildTriggerVis(go.transform, capsule);
 
             MissileProjectile missile = go.AddComponent<MissileProjectile>();
             missile.Configure(PlayerID, Team, type, target, netId, channelMask, OwnShip(), ArmDelay.Value);
+        }
+
+        // Debug aid: OnDrawGizmos never renders outside the Unity Editor, so the only way to see the
+        // trigger capsule's actual size/offset during real play is an honest-to-god mesh. Built from
+        // Unity's own primitive capsule (radius 0.5, height 2, long axis Y) and rescaled/rotated onto
+        // the exact radius/height/center/direction=Z the real CapsuleCollider above uses, so it always
+        // matches even if MissileLauncherAssets' collider numbers change. Additive so it reads as a
+        // translucent overlay instead of hiding the missile mesh inside it.
+        private static void BuildTriggerVis(Transform parent, CapsuleCollider capsule)
+        {
+            GameObject vis = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            vis.name = "TriggerVis";
+            Object.DestroyImmediate(vis.GetComponent<Collider>());
+            vis.transform.SetParent(parent, false);
+            vis.transform.localPosition = capsule.center;
+            vis.transform.localRotation = Quaternion.Euler(90f, 0f, 0f); // primitive's Y axis -> local Z
+            vis.transform.localScale = new Vector3(capsule.radius * 2f, capsule.height * 0.5f, capsule.radius * 2f);
+            Material material = new Material(Shader.Find("Particles/Additive"));
+            material.SetColor("_TintColor", new Color(0.2f, 1f, 1f, 0.5f));
+            vis.GetComponent<Renderer>().material = material;
         }
 
         // Monotonic per-session source of shared missile ids. Minted only on the host (ExecuteFire is
@@ -709,6 +868,10 @@ namespace BeyondSpiderAssembly
         // read live off the block, since the block that fired it may not even exist a moment later.
         private float armSeconds = 0.18f;
         private const float RetargetInterval = 0.4f;
+        // Last burn state the authoritative flight computed — what the host's state batcher
+        // (MissileLauncherNet.FixedUpdate) reads for the mirrors' engine glow.
+        private bool netBurning;
+        public bool NetBurning { get { return netBurning; } }
 
         public void Configure(int playerId, MPTeam team, int missileType, ITrackable initialTarget, int netId, int fireChannelMask, ShipState launchingShip, float armDelaySeconds)
         {
@@ -723,6 +886,10 @@ namespace BeyondSpiderAssembly
             structuralHP = MissileLauncherAssets.MissileStructuralHP[type];
             radiusValue = MissileLauncherAssets.MissileRadius[type];
             lifetime = MissileLauncherAssets.MissileLifetime[type];
+            // Net identity is now complete — enter the shared missile registry (host authoritative
+            // missiles and client mirrors alike; the host's batcher streams from it, clients
+            // resolve incoming batches against it).
+            MissileLauncherNet.Instance.RegisterMissile(this);
             // Attach the engine glow here (not Awake) so it's sized for the configured type.
             if (engineGlow == null)
             {
@@ -812,6 +979,14 @@ namespace BeyondSpiderAssembly
                 return;
             }
 
+            // MP rule: every missile on a client is a visual mirror (authoritative missiles only
+            // ever spawn host-side via ExecuteFire) — no guidance, no fuze, no retargeting there.
+            if (NetAuthority.IsClient)
+            {
+                MirrorStep();
+                return;
+            }
+
             if (Time.time - spawnTime >= armSeconds && CheckSweepHit())
             {
                 return;
@@ -843,8 +1018,15 @@ namespace BeyondSpiderAssembly
             if (target != null && target.IsAlive)
             {
                 burning = MissileGuidance.Steer(transform, body, target.Position, target.Velocity, GuidanceParams(target.Kind));
-                if (MissileGuidance.FuzeTriggered(transform.position, body.velocity, target.Position, target.Velocity,
-                        target.Radius, SpaceBalance.MissileFuzeRadius, SpaceBalance.MissileArmingRadius))
+                // Ships rely on the contact fuze (real hull, no pre-emption) plus a miss-only
+                // self-destruct; only point-defense targets (shells, other missiles) get the full
+                // proximity kill — see MissileGuidance.FuzeTriggered/FlybyTriggered.
+                bool fuzeTriggered = target.Kind == TrackKind.Ship
+                    ? MissileGuidance.FlybyTriggered(transform.position, body.velocity, target.Position, target.Velocity,
+                        SpaceBalance.MissileArmingRadius)
+                    : MissileGuidance.FuzeTriggered(transform.position, body.velocity, target.Position, target.Velocity,
+                        target.Radius, SpaceBalance.MissileFuzeRadius, SpaceBalance.MissileArmingRadius);
+                if (fuzeTriggered)
                 {
                     Detonate(target);
                     return;
@@ -860,10 +1042,74 @@ namespace BeyondSpiderAssembly
                 }
             }
 
+            netBurning = burning;
             if (engineGlow != null)
             {
                 engineGlow.SetBurning(burning);
             }
+        }
+
+        // ---- Client mirror flight (MP rule: display and smoothing only) ----
+        // The mirror coasts on its own rigidbody between the host's 0.05 s state batches (velocity
+        // integration is the dead reckoning), bleeds the last received position error in over a
+        // few ticks instead of teleporting, and mirrors the host's burn flag for the engine glow.
+        // Death arrives via DetonateMsg; the TTL check above is the packet-loss fallback.
+        private Vector3 pendingCorrection;
+        private bool mirrorBurning = true; // burn until the first snapshot says otherwise: fresh missiles thrust
+        private const float MirrorCorrectionRate = 0.2f;
+        private const float MirrorSnapDistance = 12f;
+
+        private void MirrorStep()
+        {
+            if (pendingCorrection.sqrMagnitude > 0.0001f)
+            {
+                Vector3 applied = pendingCorrection * MirrorCorrectionRate;
+                transform.position += applied;
+                pendingCorrection -= applied;
+            }
+            if (body != null && body.velocity.sqrMagnitude > 0.01f)
+            {
+                transform.rotation = Quaternion.LookRotation(body.velocity.normalized, transform.up);
+            }
+            if (engineGlow != null)
+            {
+                engineGlow.SetBurning(mirrorBurning);
+            }
+        }
+
+        // A host state batch carried this mirror's entry: small error smooths out over the next
+        // ticks, a gross one (missed messages, host-side shield shove) snaps outright.
+        public void ReceiveNetworkState(Vector3 position, Vector3 velocity, bool burning)
+        {
+            Vector3 error = position - transform.position;
+            if (error.sqrMagnitude > MirrorSnapDistance * MirrorSnapDistance)
+            {
+                transform.position = position;
+                pendingCorrection = Vector3.zero;
+            }
+            else
+            {
+                pendingCorrection = error;
+            }
+            if (body != null)
+            {
+                body.velocity = velocity;
+            }
+            mirrorBurning = burning;
+        }
+
+        // Host DetonateMsg landed on this mirror: fireball at the host's blast point, then vanish.
+        // No damage, no forces — the physical outcome reaches clients through vanilla machine sync.
+        public void MirrorDetonate(Vector3 blastPosition, Vector3 blastVelocity)
+        {
+            if (detonated)
+            {
+                return;
+            }
+            detonated = true;
+            SpaceEffectAssets.PlayMissileBlast(blastPosition, blastVelocity, MissileLauncherAssets.MissileWarheadCharge[type]);
+            SpaceCombatRegistry.UnregisterTrackable(this);
+            Destroy(gameObject);
         }
 
         // True for another in-flight missile launched by this same ship (ADR-0011 connectivity, not
@@ -914,11 +1160,16 @@ namespace BeyondSpiderAssembly
                 {
                     continue; // friendly (or own-ship) block — pass through, same as OnTriggerEnter
                 }
+                if (otherMissile == null && block == null && SpaceCombatUtil.IsUnrecognizedObstacle(col))
+                {
+                    continue; // e.g. the spectator camera's own collider — not real geometry
+                }
 
                 RaycastHit hit = hits[i];
                 // Blast cloud can't carry through the surface it just struck — keep only the velocity
                 // component tangential to the hit plane (the user's spec: project onto the struck plane).
                 Vector3 blastVelocity = body.velocity - Vector3.Dot(body.velocity, hit.normal) * hit.normal;
+                SubsystemDetonation.TryDirectHit(col);
                 Detonate(col.GetComponentInParent<IKineticTarget>() as ITrackable, hit.point, blastVelocity);
                 return true;
             }
@@ -941,7 +1192,29 @@ namespace BeyondSpiderAssembly
             // Only cap/govern closing speed against ships; shells and other missiles are uncapped
             // (see MissileGuidance.GuidanceParams.LimitClosingSpeed).
             p.LimitClosingSpeed = targetKind == TrackKind.Ship;
+            p.AvoidAccel = HullAvoidAccel();
             return p;
+        }
+
+        // Self-hull avoidance (user request): a missile guiding onto a target on the far side of
+        // its own launching ship must not carve straight back through the hull to get there. Reads
+        // the same core-local OBB SpaceCaptainBlock.PredictHullImpact tests against and folds a
+        // repulsive bias into the steering command (MissileGuidance.BoxAvoidAccel) — it fades in
+        // only near the hull, so it never fights PN/closing-speed guidance out at range.
+        private Vector3 HullAvoidAccel()
+        {
+            ShipState ship = ownerShip;
+            if (ship == null || ship.Core == null || ship.HullSize == Vector3.zero)
+            {
+                return Vector3.zero;
+            }
+
+            Transform coreTransform = ship.Core.transform;
+            Vector3 boxCenter = coreTransform.position + coreTransform.rotation * ship.HullLocalCenter;
+            float margin = Mathf.Max(ship.HullSize.x, Mathf.Max(ship.HullSize.y, ship.HullSize.z))
+                * SpaceBalance.MissileHullAvoidMarginFactor;
+            return MissileGuidance.BoxAvoidAccel(transform.position, boxCenter, coreTransform.rotation,
+                ship.HullSize * 0.5f, margin, SpaceBalance.MissileHullAvoidGain);
         }
 
         // Contact fuze via the collision capsule: once armed (clear of the launcher), touching any hostile
@@ -949,7 +1222,8 @@ namespace BeyondSpiderAssembly
         // on its own hull leaving the cell.
         private void OnTriggerEnter(Collider other)
         {
-            if (detonated || Time.time - spawnTime < armSeconds || other == null)
+            // Contact fuze is authority-only; mirrors die via DetonateMsg.
+            if (NetAuthority.IsClient || detonated || Time.time - spawnTime < armSeconds || other == null)
             {
                 return;
             }
@@ -967,12 +1241,19 @@ namespace BeyondSpiderAssembly
             {
                 return; // friendly ship — pass through rather than self-fratricide
             }
+            if (otherMissile == null && block == null && SpaceCombatUtil.IsUnrecognizedObstacle(other))
+            {
+                return; // e.g. the spectator camera's own collider — not real geometry
+            }
+            SubsystemDetonation.TryDirectHit(other);
             Detonate(other.GetComponentInParent<IKineticTarget>() as ITrackable);
         }
 
         public void ApplyDamage(float damage)
         {
-            if (detonated || damage <= 0f || structuralHP <= 0f)
+            // Authority-only: a client CIWS stream or laser replay must never kill a mirror —
+            // its death (with cook-off blast) arrives via DetonateMsg.
+            if (!NetAuthority.IsAuthority || detonated || damage <= 0f || structuralHP <= 0f)
             {
                 return;
             }
@@ -989,6 +1270,10 @@ namespace BeyondSpiderAssembly
         // caught again next tick rather than dying to the field itself.
         public void ApplyShieldDeceleration(Vector3 newVelocity, float appliedDeltaV)
         {
+            // Deliberately NOT authority-fenced: on the host the authoritative interception loop
+            // calls this; on a client only ShieldProjectorBlock.ClientIntercept does — cosmetic
+            // smoothing between state batches so the mirror slows where the host's field slows
+            // the real missile (the 0.05 s batch stream still corrects any residual drift).
             if (body == null || appliedDeltaV <= 0f)
             {
                 return;
@@ -1013,6 +1298,14 @@ namespace BeyondSpiderAssembly
             }
             detonated = true;
 
+            // Detonate only ever runs on the authority (every caller is fenced) — tell the client
+            // mirrors where to play the fireball and die.
+            if (StatMaster.isMP)
+            {
+                ModNetworking.SendToAll(MissileLauncherNet.DetonateMsg.CreateMessage(
+                    ownerPlayerID, guidHash, blastPosition, blastVelocity));
+            }
+
             // Vacuum fireball at the point of death — purely cosmetic, the blast damage below is
             // unchanged. Covers every detonation path (fuze, contact, shoot-down cook-off); the cloud
             // inherits the given blast velocity (see MissileBlastDrift).
@@ -1028,6 +1321,12 @@ namespace BeyondSpiderAssembly
             }
 
             ApplyBlastDamageToArmor(blastPosition);
+            // Reactor/capacitor secondary detonation (damage-refinement spec): every subsystem
+            // within the warhead's own blast radius with clear line of sight to its center goes up
+            // too — this also catches the "direct hit" case for free, since a contact-fuze
+            // detonation sits at ~0 distance from whatever it just touched (see SubsystemDetonation).
+            SubsystemDetonation.TryProximityBlast(blastPosition,
+                SpaceBalance.MissileBlastRadius(MissileLauncherAssets.MissileWarheadCharge[type]));
             ApplyBlastForce(blastPosition);
             SpaceCombatRegistry.UnregisterTrackable(this);
             Destroy(gameObject);
@@ -1113,6 +1412,12 @@ namespace BeyondSpiderAssembly
         // radius (cube-root of yield), applied to every armour block within range with linear falloff.
         private void ApplyBlastDamageToArmor(Vector3 origin)
         {
+            // Unreachable on clients (only Detonate calls this, and mirrors never Detonate) —
+            // defense in depth for the MP damage rule.
+            if (!NetAuthority.IsAuthority)
+            {
+                return;
+            }
             float charge = MissileLauncherAssets.MissileWarheadCharge[type];
             float baseBlastDamage = SpaceBalance.MissileBlastDamage(charge);
             float blastRadius = SpaceBalance.MissileBlastRadius(charge);
@@ -1139,6 +1444,7 @@ namespace BeyondSpiderAssembly
         private void OnDestroy()
         {
             SpaceCombatRegistry.UnregisterTrackable(this);
+            MissileLauncherNet.Instance.UnregisterMissile(this);
         }
     }
 

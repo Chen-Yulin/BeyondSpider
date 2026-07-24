@@ -1,0 +1,30 @@
+<Block>
+	<Debug>true</Debug>
+	<ID>15</ID>
+	<Name>Thruster</Name>
+	<Mass>1.5</Mass>
+	<Script>BeyondSpiderAssembly.ThrusterBlock</Script>
+	<Mesh name="BS Thruster Mesh">
+		<Position x="0.0" y="0.0" z="0.0" />
+		<Rotation x="0" y="0" z="0" />
+		<Scale x="1.0" y="1.0" z="1.0" />
+	</Mesh>
+	<Texture name="BS Thruster Texture" />
+	<Icon>
+		<Position x="0.0" y="-0.1" z="-0.2" />
+		<Rotation x="20" y="215" z="0" />
+		<Scale x="0.3" y="0.3" z="0.3" />
+	</Icon>
+	<Colliders>
+		<BoxCollider>
+			<Position x="0.0" y="0.0" z="0.42" />
+			<Rotation x="0" y="0" z="0" />
+			<Scale x="0.8" y="0.8" z="0.8" />
+		</BoxCollider>
+	</Colliders>
+	<BasePoint hasAddingPoint="false">
+		<Stickiness enabled="true" radius="0.2" />
+		<Motion x="false" y="false" z="false" />
+	</BasePoint>
+	<AddingPoints />
+</Block>

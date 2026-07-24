@@ -1,9 +1,169 @@
+using System.Collections.Generic;
 using Modding;
 using Modding.Blocks;
 using UnityEngine;
 
 namespace BeyondSpiderAssembly
 {
+    // MP replication of armor pools (dirty-flag batches, the WW2-Naval CrewUpdateMessage shape):
+    // damage/repair only ever mutate armor on the host (NanoArmorBehaviour.ApplyPhysicalDamage is
+    // fenced), so the host batches changed blocks' Integrity/Structural every 0.2 s and clients
+    // assign the values directly — overlay colors, info-panel aggregates, and the client rounds'
+    // breach pass-through all follow. Batches (not per-hit events) because hits are bursty (one
+    // blast dirties dozens of blocks in a tick) and repair re-dirties every damaged block every
+    // tick; IntegerArray/SingleArray payloads make a batch one message.
+    public class NanoArmorNet : SingleInstance<NanoArmorNet>
+    {
+        public override string Name { get { return "BeyondSpider Nano Armor Net"; } }
+
+        // (playerId, guidHashes[], interleaved [integrity0, structural0, integrity1, structural1, …])
+        public static MessageType BatchMsg = ModNetworking.CreateMessageType(
+            DataType.Integer, DataType.IntegerArray, DataType.SingleArray);
+
+        private const float FlushInterval = 0.2f;
+        // Loss insurance: every touched block is re-sent on this cadence even when unchanged, so a
+        // dropped batch corrects itself (state is absolute, resends are idempotent).
+        private const float FullSweepInterval = 5f;
+        private const int MaxBlocksPerMessage = 60;
+
+        private readonly Dictionary<string, NanoArmorBehaviour> armors = new Dictionary<string, NanoArmorBehaviour>();
+        private readonly HashSet<NanoArmorBehaviour> dirty = new HashSet<NanoArmorBehaviour>();
+        private readonly Dictionary<int, List<NanoArmorBehaviour>> flushGroups = new Dictionary<int, List<NanoArmorBehaviour>>();
+        private float nextFlush;
+        private float nextFullSweep;
+
+        public void Register(NanoArmorBehaviour armor)
+        {
+            armors[Key(armor.PlayerID, armor.GuidHash)] = armor;
+        }
+
+        public void Unregister(NanoArmorBehaviour armor)
+        {
+            string key = Key(armor.PlayerID, armor.GuidHash);
+            NanoArmorBehaviour current;
+            if (armors.TryGetValue(key, out current) && ReferenceEquals(current, armor))
+            {
+                armors.Remove(key);
+            }
+            dirty.Remove(armor);
+        }
+
+        public void MarkDirty(NanoArmorBehaviour armor)
+        {
+            if (armor != null)
+            {
+                dirty.Add(armor);
+                armor.everTouched = true;
+            }
+        }
+
+        private void FixedUpdate()
+        {
+            if (!StatMaster.isMP || !NetAuthority.IsAuthority || !StatMaster.levelSimulating)
+            {
+                return;
+            }
+
+            if (Time.time >= nextFullSweep)
+            {
+                nextFullSweep = Time.time + FullSweepInterval;
+                foreach (KeyValuePair<string, NanoArmorBehaviour> pair in armors)
+                {
+                    NanoArmorBehaviour armor = pair.Value;
+                    if (armor != null && armor.everTouched)
+                    {
+                        armor.forceSync = true;
+                        dirty.Add(armor);
+                    }
+                }
+            }
+
+            if (Time.time < nextFlush || dirty.Count == 0)
+            {
+                return;
+            }
+            nextFlush = Time.time + FlushInterval;
+            Flush();
+        }
+
+        private void Flush()
+        {
+            foreach (KeyValuePair<int, List<NanoArmorBehaviour>> group in flushGroups)
+            {
+                group.Value.Clear();
+            }
+
+            foreach (NanoArmorBehaviour armor in dirty)
+            {
+                // The tiny epsilon only filters exact no-ops (e.g. a sweep on an already-synced
+                // block); real damage and even trickling repair always pass — the flush cadence is
+                // the throttle, not the delta.
+                if (armor == null || (!armor.forceSync
+                    && Mathf.Abs(armor.Integrity - armor.lastSentIntegrity) < 0.0001f
+                    && Mathf.Abs(armor.StructuralValue - armor.lastSentStructural) < 0.0001f))
+                {
+                    continue;
+                }
+                List<NanoArmorBehaviour> list;
+                if (!flushGroups.TryGetValue(armor.PlayerID, out list))
+                {
+                    list = new List<NanoArmorBehaviour>();
+                    flushGroups.Add(armor.PlayerID, list);
+                }
+                list.Add(armor);
+            }
+            dirty.Clear();
+
+            foreach (KeyValuePair<int, List<NanoArmorBehaviour>> group in flushGroups)
+            {
+                List<NanoArmorBehaviour> list = group.Value;
+                int index = 0;
+                while (index < list.Count)
+                {
+                    int count = Mathf.Min(MaxBlocksPerMessage, list.Count - index);
+                    int[] guids = new int[count];
+                    float[] values = new float[count * 2];
+                    for (int i = 0; i < count; i++)
+                    {
+                        NanoArmorBehaviour armor = list[index + i];
+                        guids[i] = armor.GuidHash;
+                        values[i * 2] = armor.Integrity;
+                        values[i * 2 + 1] = armor.StructuralValue;
+                        armor.lastSentIntegrity = armor.Integrity;
+                        armor.lastSentStructural = armor.StructuralValue;
+                        armor.forceSync = false;
+                    }
+                    ModNetworking.SendToAll(BatchMsg.CreateMessage(group.Key, guids, values));
+                    index += count;
+                }
+            }
+        }
+
+        public void BatchReceiver(Message msg)
+        {
+            int playerId = (int)msg.GetData(0);
+            int[] guids = (int[])msg.GetData(1);
+            float[] values = (float[])msg.GetData(2);
+            if (guids == null || values == null || values.Length < guids.Length * 2)
+            {
+                return;
+            }
+            for (int i = 0; i < guids.Length; i++)
+            {
+                NanoArmorBehaviour armor;
+                if (armors.TryGetValue(Key(playerId, guids[i]), out armor) && armor != null)
+                {
+                    armor.ReceiveNetworkState(values[i * 2], values[i * 2 + 1]);
+                }
+            }
+        }
+
+        private static string Key(int playerId, int guid)
+        {
+            return playerId + ":" + guid;
+        }
+    }
+
     public class NanoArmorController : SingleInstance<NanoArmorController>
     {
         public override string Name { get { return "BeyondSpider Nano Armor Controller"; } }
@@ -81,6 +241,14 @@ namespace BeyondSpiderAssembly
         public float Integrity = 1f;
         public float StructuralValue = 1f;
 
+        // Net identity + host-side sync bookkeeping (owned by NanoArmorNet's flush loop).
+        public int PlayerID { get { return playerID; } }
+        public int GuidHash { get; private set; }
+        internal float lastSentIntegrity = 1f;
+        internal float lastSentStructural = 1f;
+        internal bool everTouched;
+        internal bool forceSync;
+
         private BlockBehaviour bb;
         private Rigidbody body;
         private int playerID;
@@ -150,6 +318,8 @@ namespace BeyondSpiderAssembly
             // picks it up; the partition also calls AssignShip directly on every armor block it
             // finds in a ship's component.
             AssignShip(SpaceCombatRegistry.ShipOf(bb));
+            GuidHash = bb.BuildingBlock.Guid.GetHashCode();
+            NanoArmorNet.Instance.Register(this);
             InitVisual();
             ColliderOptimize();
         }
@@ -166,6 +336,7 @@ namespace BeyondSpiderAssembly
 
         private void OnDestroy()
         {
+            NanoArmorNet.Instance.Unregister(this);
             if (ship != null)
             {
                 SpaceCombatRegistry.RemoveSubsystem(this, ship.Armor);
@@ -184,17 +355,20 @@ namespace BeyondSpiderAssembly
                 AssignShip(SpaceCombatRegistry.ShipOf(bb));
             }
 
-            bool hostAuthoritative = !StatMaster.isMP || !StatMaster.isClient;
             // Self-repair only while the structural layer is pristine: the first hit that spills
             // past integrity into structure permanently disables regen for this block (ADR-0007).
             // StructuralValue only ever decreases, so this latches off for good once it drops.
-            if (hostAuthoritative && ship != null && Integrity < 1f && StructuralValue >= 1f)
+            if (NetAuthority.IsAuthority && ship != null && Integrity < 1f && StructuralValue >= 1f)
             {
                 float integrityFactor = Mathf.Lerp(MinRepairSpeedFactor, 1f, Integrity);
                 float wantedRepair = RepairRatePerSecond * integrityFactor * Time.fixedDeltaTime;
                 float energyNeeded = wantedRepair * IntegrityPool * EnergyPerRepairPoint;
                 float ratio = ship.Energy.Request(EnergyBus.Armor, energyNeeded);
                 Integrity = Mathf.Clamp01(Integrity + wantedRepair * ratio * ratio);
+                if (StatMaster.isMP)
+                {
+                    NanoArmorNet.Instance.MarkDirty(this);
+                }
             }
 
             UpdateVisual();
@@ -218,9 +392,18 @@ namespace BeyondSpiderAssembly
 
         public void ApplyPhysicalDamage(float damage)
         {
-            if (damage <= 0f)
+            // Single choke point for the MP damage rule: every armor damage path (kinetic, laser,
+            // blast) funnels through here, and structural weakening / breach / joint changes have
+            // no other caller — so this one fence keeps clients from ever mutating armor state.
+            // Client armor pools are driven by the host's NanoArmorNet batches instead.
+            if (!NetAuthority.IsAuthority || damage <= 0f)
             {
                 return;
+            }
+
+            if (StatMaster.isMP)
+            {
+                NanoArmorNet.Instance.MarkDirty(this);
             }
 
             if (Integrity > 0f)
@@ -238,6 +421,17 @@ namespace BeyondSpiderAssembly
 
             StructuralValue = Mathf.Clamp01(StructuralValue - damage / StructuralPool);
             ApplyStructuralWeakening();
+        }
+
+        // Host BatchMsg landed on this client replica: assign the pools directly — no
+        // ApplyStructuralWeakening, no joint changes, no breach explosion force. The physical
+        // consequences (joints snapping, the plate flying off) reach clients through vanilla
+        // machine sync; this only keeps the overlay/info-panel/breach-transparency state honest.
+        public void ReceiveNetworkState(float integrity, float structural)
+        {
+            Integrity = Mathf.Clamp01(integrity);
+            StructuralValue = Mathf.Clamp01(structural);
+            breached = StructuralValue <= StructuralBreachEpsilon;
         }
 
         private void ApplyStructuralWeakening()

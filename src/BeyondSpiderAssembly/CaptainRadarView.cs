@@ -30,9 +30,27 @@ namespace BeyondSpiderAssembly
         private const float MissileMarkerHeavyFactor = 1.25f;
         private const float MissileMarkerMediumFactor = 0.5f;
         private const float MissileMarkerSmallFactor = 0.25f;
+        // Missiles draw as velocity-aligned capsules rather than dots, so a glance shows where each
+        // one is headed. Unity's capsule primitive is 1 wide x 2 tall at unit scale; these factors
+        // shape the tier scale into a slender ~3:1 body of about the same visual mass as the old
+        // sphere of that tier.
+        private const float MissileCapsuleWidthFactor = 0.55f;
+        private const float MissileCapsuleLengthFactor = 0.9f;
         // Big (>=76mm) cannon shells, shown only while the SHL filter row is on — the smallest
         // dot on the display, under even a small missile.
         private const float ShellMarkerFactor = 0.2f;
+        // Shell dots grow linearly with caliber around this baseline; the clamp keeps a monster
+        // bore from drawing wider than a ship and a threshold-caliber 76mm round from vanishing.
+        private const float ShellMarkerRefCaliberMm = 150f;
+        private const float ShellMarkerMinCaliberFactor = 0.5f;
+        private const float ShellMarkerMaxCaliberFactor = 2f;
+        // Ship markers scale with the hull's measured volume (ShipPartition's tick-3 OBB stat):
+        // sqrt keeps the growth readable rather than literal, and the clamp holds the biggest and
+        // smallest ship icons to exactly a 3x spread so neither corvettes nor dreadnoughts break
+        // the display.
+        private const float ShipMarkerRefVolume = 4000f;
+        private const float ShipMarkerMinVolumeFactor = 0.6f;
+        private const float ShipMarkerMaxVolumeFactor = 1.8f;
         // Lock reticle size as a multiple of the locked marker's scale — >1 so it always encircles the
         // blip. 1.7 reproduces the old fixed 0.5 reticle for a default 0.3 marker while growing for big ones.
         private const float LockIconMarkerScaleRatio = 1.7f;
@@ -104,6 +122,16 @@ namespace BeyondSpiderAssembly
         // — smoothing alone would trail a fast contact by velocity/rate — so this only has to
         // absorb the small step each new scan brings.
         private const float BlipSmoothingRate = 12f;
+        // Contacts beyond the displayed range draw as a bearing arrow hugging the panel's 2D edge
+        // instead of a normal blip clamped to the outer ring — a real-looking icon parked at the
+        // rim reads as "target at ring 4", which is exactly the misread this avoids. The arrows
+        // are an OnGUI overlay clamped to the square panel border (the 3D outer ring projects well
+        // inside the panel, the old complaint), inset by just enough margin to fit the arrow.
+        private const float EdgeArrowViewportMargin = 0.04f;
+        private const float EdgeArrowSizePixels = 20f;
+        private const int EdgeArrowTextureSize = 64;
+        // Per-ring range labels, drawn where each ring passes nearest the viewer.
+        private const float RingLabelEdgeMargin = 0.02f;
 
         public bool IsOpen;
         public float MetersPerUnit = 50f;
@@ -135,6 +163,8 @@ namespace BeyondSpiderAssembly
         private readonly GameObject[] channel0Icons = new GameObject[FireChannels.Channel0MaxTargets];
         private int activeChannel;
         private GUIStyle tabLabelStyle;
+        private GUIStyle ringLabelStyle;
+        private Texture2D edgeArrowTexture;
         private Mesh arrowMesh;
         private Mesh rippleRingMesh;
         private Transform[] rippleTransforms;
@@ -157,6 +187,10 @@ namespace BeyondSpiderAssembly
         // snap rather than slide in from wherever the recycled marker last sat.
         private sealed class Blip
         {
+            // Rented like DropLine below: non-null if and only if this contact currently draws a
+            // 3D marker. A contact beyond the displayed range keeps its Blip (so its smoothing
+            // state survives and it eases back in when it returns) but holds no marker — it shows
+            // as a panel-edge bearing arrow instead (see edgeIndicators).
             public GameObject Marker;
             // Non-null if and only if this blip currently owns an ACTIVE plumb line: rented on
             // first use by UpdateDropLine, handed back by ReleaseDropLine. Both halves matter,
@@ -173,11 +207,26 @@ namespace BeyondSpiderAssembly
         }
 
         private readonly List<GameObject> arrowPool = new List<GameObject>();
+        private readonly List<GameObject> capsulePool = new List<GameObject>();
         private readonly List<GameObject> spherePool = new List<GameObject>();
         private readonly List<LineRenderer> dropLinePool = new List<LineRenderer>();
         private readonly Dictionary<ITrackable, Blip> blips = new Dictionary<ITrackable, Blip>();
         private readonly HashSet<ITrackable> seen = new HashSet<ITrackable>();
         private readonly List<ITrackable> stale = new List<ITrackable>();
+
+        // A contact past the displayed range this frame: drawn as a bearing arrow pinned to the
+        // panel's edge (OnGUI overlay, see AddEdgeIndicator/DrawEdgeArrows) and still lockable by
+        // click through FindLockableTarget. Rebuilt every SyncMarkers pass.
+        private struct EdgeIndicator
+        {
+            public ITrackable Target;
+            // Radar-camera viewport position (0..1, y up), already clamped to the square border.
+            public Vector2 Viewport;
+            public float AngleDeg;
+            public Color Color;
+        }
+
+        private readonly List<EdgeIndicator> edgeIndicators = new List<EdgeIndicator>();
 
         private void Awake()
         {
@@ -200,6 +249,15 @@ namespace BeyondSpiderAssembly
             GameObject rootObject = new GameObject("BS Radar Pocket Root");
             rootObject.transform.position = new Vector3(0f, PocketOriginHeight, 0f);
             pocketRoot = rootObject.transform;
+            // The whole pocket scene (camera, grid, glow, ripples, lock icons, and every pooled
+            // marker below) hangs off this one root. BuildScene() only ever runs once, in Awake, on
+            // the SingleInstance component that lives on Mod.Root (DontDestroyOnLoad) -- but these
+            // GameObjects are minted in the *active* scene, so without this they'd be destroyed on
+            // the next level load and never rebuilt, leaving the radar panel present but blank after
+            // the first scene change. Persisting the root keeps its whole subtree alive; it's a
+            // world-space root at Y=PocketOriginHeight, so it stays an independent DDOL root rather
+            // than parenting under Mod.Root the way the UI canvas does.
+            Object.DontDestroyOnLoad(rootObject);
 
             GameObject gimbalObject = new GameObject("BS Radar Gimbal");
             gimbalObject.transform.SetParent(pocketRoot, false);
@@ -454,6 +512,48 @@ namespace BeyondSpiderAssembly
             framePixel = new Texture2D(1, 1, TextureFormat.ARGB32, false);
             framePixel.SetPixel(0, 0, Color.white);
             framePixel.Apply();
+
+            BuildEdgeArrowTexture();
+        }
+
+        // A white notched dart pointing up (texture space, tip at the top), tinted per contact by
+        // GUI.color at draw time and rotated to its bearing via GUIUtility.RotateAroundPivot. Drawn
+        // small with bilinear filtering, so a binary in/out alpha is smooth enough.
+        private void BuildEdgeArrowTexture()
+        {
+            edgeArrowTexture = new Texture2D(EdgeArrowTextureSize, EdgeArrowTextureSize, TextureFormat.ARGB32, false);
+            edgeArrowTexture.wrapMode = TextureWrapMode.Clamp;
+            Vector2 tip = new Vector2(0.5f, 0.95f);
+            Vector2 left = new Vector2(0.1f, 0.08f);
+            Vector2 right = new Vector2(0.9f, 0.08f);
+            Vector2 notch = new Vector2(0.5f, 0.32f);
+            Color solid = Color.white;
+            Color clear = new Color(1f, 1f, 1f, 0f);
+            for (int y = 0; y < EdgeArrowTextureSize; y++)
+            {
+                for (int x = 0; x < EdgeArrowTextureSize; x++)
+                {
+                    Vector2 p = new Vector2((x + 0.5f) / EdgeArrowTextureSize, (y + 0.5f) / EdgeArrowTextureSize);
+                    bool inside = PointInTriangle(p, tip, left, notch) || PointInTriangle(p, tip, notch, right);
+                    edgeArrowTexture.SetPixel(x, y, inside ? solid : clear);
+                }
+            }
+            edgeArrowTexture.Apply();
+        }
+
+        private static float EdgeSide(Vector2 a, Vector2 b, Vector2 p)
+        {
+            return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+        }
+
+        private static bool PointInTriangle(Vector2 p, Vector2 a, Vector2 b, Vector2 c)
+        {
+            float d1 = EdgeSide(a, b, p);
+            float d2 = EdgeSide(b, c, p);
+            float d3 = EdgeSide(c, a, p);
+            bool hasNegative = d1 < 0f || d2 < 0f || d3 < 0f;
+            bool hasPositive = d1 > 0f || d2 > 0f || d3 > 0f;
+            return !(hasNegative && hasPositive);
         }
 
         // One reticle quad per single-lock channel (1-3) plus one per channel-0 threat slot
@@ -551,10 +651,19 @@ namespace BeyondSpiderAssembly
                 MeshRenderer renderer = marker.AddComponent<MeshRenderer>();
                 renderer.material = MarkerMaterial();
             }
+            else if (kind == TrackKind.HeavyMissile)
+            {
+                // Capsule, not sphere: SyncMarkers aligns its long (Y) axis with the missile's
+                // velocity so the blip itself shows the flight direction.
+                marker = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+                marker.name = "BS Radar Missile Marker";
+                Object.DestroyImmediate(marker.GetComponent<Collider>());
+                marker.GetComponent<Renderer>().material = MarkerMaterial();
+            }
             else
             {
                 marker = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                marker.name = "BS Radar Missile Marker";
+                marker.name = "BS Radar Shell Marker";
                 Object.DestroyImmediate(marker.GetComponent<Collider>());
                 marker.GetComponent<Renderer>().material = MarkerMaterial();
             }
@@ -597,7 +706,7 @@ namespace BeyondSpiderAssembly
 
         // Pool "in use" is tracked by activeSelf alone (releases below just SetActive(false)), the
         // same bookkeeping the marker pools have always used.
-        private Blip GetOrCreateBlip(ITrackable target, TrackKind kind)
+        private Blip GetOrCreateBlip(ITrackable target)
         {
             Blip blip;
             if (blips.TryGetValue(target, out blip))
@@ -606,14 +715,36 @@ namespace BeyondSpiderAssembly
             }
 
             blip = new Blip();
-            blip.Marker = RentMarker(kind);
             blips[target] = blip;
             return blip;
         }
 
+        // Rents the blip a marker of its kind if it doesn't hold one (it was off-display, or the
+        // record is fresh) and activates it. Same non-null-iff-owned discipline as DropLine.
+        private void EnsureMarker(Blip blip, TrackKind kind)
+        {
+            if (blip.Marker == null)
+            {
+                blip.Marker = RentMarker(kind);
+            }
+            blip.Marker.SetActive(true);
+        }
+
+        private static void ReleaseMarker(Blip blip)
+        {
+            if (blip.Marker == null)
+            {
+                return;
+            }
+            blip.Marker.SetActive(false);
+            blip.Marker = null;
+        }
+
         private GameObject RentMarker(TrackKind kind)
         {
-            List<GameObject> pool = kind == TrackKind.Ship ? arrowPool : spherePool;
+            List<GameObject> pool = kind == TrackKind.Ship ? arrowPool
+                : kind == TrackKind.HeavyMissile ? capsulePool
+                : spherePool;
             for (int i = 0; i < pool.Count; i++)
             {
                 if (!pool[i].activeSelf)
@@ -659,7 +790,7 @@ namespace BeyondSpiderAssembly
 
         private static void ReleaseBlip(Blip blip)
         {
-            blip.Marker.SetActive(false);
+            ReleaseMarker(blip);
             ReleaseDropLine(blip);
         }
 
@@ -670,6 +801,7 @@ namespace BeyondSpiderAssembly
                 ReleaseBlip(pair.Value);
             }
             blips.Clear();
+            edgeIndicators.Clear();
             for (int channel = 0; channel < lockIcons.Length; channel++)
             {
                 if (lockIcons[channel] != null)
@@ -679,7 +811,12 @@ namespace BeyondSpiderAssembly
             }
             for (int slot = 0; slot < channel0Icons.Length; slot++)
             {
-                channel0Icons[slot].SetActive(false);
+                // Null-guarded like lockIcons above: SetOpen(false) can arrive after a sim-end
+                // teardown already destroyed the marker objects (logged NRE in the MP playtest).
+                if (channel0Icons[slot] != null)
+                {
+                    channel0Icons[slot].SetActive(false);
+                }
             }
         }
 
@@ -727,9 +864,9 @@ namespace BeyondSpiderAssembly
             return new Vector3(radarDirection.x, 0f, radarDirection.z);
         }
 
-        // Ship markers stay a fixed size; a missile marker is sized by tier so the three missile
-        // sizes show up as distinctly-sized dots. Anything RadarFilter can't categorize never gets
-        // drawn at all, so it only falls back to MarkerScale defensively.
+        // A ship marker scales with its hull's measured volume, a missile marker by tier, a shell
+        // dot by caliber. Anything RadarFilter can't categorize never gets drawn at all, so it
+        // only falls back to MarkerScale defensively.
         private static float MarkerScaleFor(ITrackable target)
         {
             RadarCategory category;
@@ -740,6 +877,8 @@ namespace BeyondSpiderAssembly
 
             switch (category)
             {
+                case RadarCategory.Ship:
+                    return MarkerScale * ShipVolumeFactor(target);
                 case RadarCategory.HeavyMissile:
                     return MarkerScale * MissileMarkerHeavyFactor;
                 case RadarCategory.MediumMissile:
@@ -747,10 +886,41 @@ namespace BeyondSpiderAssembly
                 case RadarCategory.SmallMissile:
                     return MarkerScale * MissileMarkerSmallFactor;
                 case RadarCategory.Shell:
-                    return MarkerScale * ShellMarkerFactor;
+                    return MarkerScale * ShellMarkerFactor * ShellCaliberFactor(target);
                 default:
                     return MarkerScale;
             }
+        }
+
+        // sqrt of hull volume relative to the reference hull, clamped to the 3x min-to-max spread.
+        // HullVolume comes from the tick-3 partition's OBB stat, which every client computes for
+        // every machine, so foreign ships size correctly too. 1 (reference size) when the ship or
+        // its stat isn't resolvable — a contact should never vanish over a missing stat.
+        private static float ShipVolumeFactor(ITrackable target)
+        {
+            SpaceShipCore core = target as SpaceShipCore;
+            if (core == null || core.BlockBehaviour == null)
+            {
+                return 1f;
+            }
+            ShipState ship = SpaceCombatRegistry.ShipOf(core.BlockBehaviour);
+            if (ship == null || ship.HullVolume <= 0f)
+            {
+                return 1f;
+            }
+            return Mathf.Clamp(Mathf.Sqrt(ship.HullVolume / ShipMarkerRefVolume),
+                ShipMarkerMinVolumeFactor, ShipMarkerMaxVolumeFactor);
+        }
+
+        private static float ShellCaliberFactor(ITrackable target)
+        {
+            SpaceKineticRound round = target as SpaceKineticRound;
+            if (round == null)
+            {
+                return 1f;
+            }
+            return Mathf.Clamp(round.Caliber / ShellMarkerRefCaliberMm,
+                ShellMarkerMinCaliberFactor, ShellMarkerMaxCaliberFactor);
         }
 
         // Where a blip should be RIGHT NOW in world space, given that its track is up to one scan
@@ -772,15 +942,13 @@ namespace BeyondSpiderAssembly
             blip.World = Vector3.Lerp(blip.World, predicted, 1f - Mathf.Exp(-BlipSmoothingRate * Time.deltaTime));
         }
 
+        // Unclamped: a contact beyond DisplayRadius returns its true (off-grid) display position,
+        // and SyncMarkers turns it into a panel-edge bearing arrow instead of a marker — a normal
+        // blip pinned to the outer ring used to read as "target at ring 4".
         private Vector3 ToDisplaySpace(Transform captain, Vector3 world)
         {
             Vector3 relative = CaptainLocalToRadarSpace(captain.InverseTransformVector(world - captain.position));
-            Vector3 displayPos = relative / MetersPerUnit;
-            if (displayPos.magnitude > DisplayRadius)
-            {
-                displayPos = displayPos.normalized * DisplayRadius;
-            }
-            return displayPos;
+            return relative / MetersPerUnit;
         }
 
         // The plumb line down to the radar plane, plus — once locked — a leg from that foot back to
@@ -811,6 +979,44 @@ namespace BeyondSpiderAssembly
             line.SetColors(color, color);
         }
 
+        // Projects an off-display contact through the radar camera and pins it to the square panel
+        // border (2D screen space — the 3D outer ring projects well inside the panel, so clamping
+        // there left a visible gap to the screen edge). The arrow points from the panel center
+        // toward the contact's projection, i.e. its bearing in the current view.
+        private void AddEdgeIndicator(ITrackable target, Vector3 displayPos, Color color)
+        {
+            if (radarCamera == null || pocketRoot == null)
+            {
+                return;
+            }
+
+            Vector3 viewport = radarCamera.WorldToViewportPoint(pocketRoot.TransformPoint(displayPos));
+            Vector2 direction = new Vector2(viewport.x - 0.5f, viewport.y - 0.5f);
+            if (viewport.z < 0f)
+            {
+                // Behind the camera the projection mirrors; flip so the arrow still points the way
+                // the player would orbit/zoom to bring the contact into view.
+                direction = -direction;
+            }
+            if (direction.sqrMagnitude < 0.0001f)
+            {
+                direction = Vector2.up;
+            }
+
+            // Scale the center-to-projection ray until its LARGER axis touches the inset border —
+            // that's the square-edge clamp.
+            float half = 0.5f - EdgeArrowViewportMargin;
+            float reach = Mathf.Max(Mathf.Abs(direction.x), Mathf.Abs(direction.y));
+            Vector2 clamped = new Vector2(0.5f, 0.5f) + direction * (half / reach);
+
+            EdgeIndicator indicator;
+            indicator.Target = target;
+            indicator.Viewport = clamped;
+            indicator.AngleDeg = Mathf.Atan2(direction.x, direction.y) * Mathf.Rad2Deg;
+            indicator.Color = color;
+            edgeIndicators.Add(indicator);
+        }
+
         private void SyncMarkers()
         {
             ShipState ship = OwnShipState();
@@ -826,15 +1032,16 @@ namespace BeyondSpiderAssembly
             // from the blips drawn here, and it locks the very channel whose filter drew them.
             int filter = ship.ChannelFilters[activeChannel];
             seen.Clear();
+            edgeIndicators.Clear();
 
             if (ship.Core != null)
             {
                 seen.Add(ship.Core);
-                Blip self = GetOrCreateBlip(ship.Core, TrackKind.Ship);
-                self.Marker.SetActive(true);
+                Blip self = GetOrCreateBlip(ship.Core);
+                EnsureMarker(self, TrackKind.Ship);
                 self.Marker.transform.localPosition = Vector3.zero;
                 self.Marker.transform.localRotation = Quaternion.identity;
-                self.Marker.transform.localScale = Vector3.one * MarkerScale * OriginMarkerScale;
+                self.Marker.transform.localScale = Vector3.one * MarkerScaleFor(ship.Core) * OriginMarkerScale;
                 SetRendererColor(self.Marker.GetComponent<Renderer>(), Color.green);
                 // No plumb line: own hull sits on the origin, so it would have nowhere to drop.
                 // This has to actively release rather than just skip drawing — blips outlive a
@@ -867,12 +1074,28 @@ namespace BeyondSpiderAssembly
                     continue;
                 }
 
-                Blip blip = GetOrCreateBlip(track.Target, track.Kind);
+                Blip blip = GetOrCreateBlip(track.Target);
                 AdvanceBlip(blip, track);
 
+                Color color = SpaceBallistics.IsHostile(ship.Captain, track.Target) ? Color.red : Color.green;
                 Vector3 displayPos = ToDisplaySpace(captain, blip.World);
-                blip.Marker.SetActive(true);
-                blip.Marker.transform.localScale = Vector3.one * MarkerScaleFor(track.Target);
+                if (displayPos.magnitude > DisplayRadius)
+                {
+                    // Off the displayed range: no marker, no plumb line — just a bearing arrow
+                    // pinned to the panel edge, so nothing suggests a readable distance.
+                    ReleaseMarker(blip);
+                    ReleaseDropLine(blip);
+                    AddEdgeIndicator(track.Target, displayPos, color);
+                    continue;
+                }
+
+                EnsureMarker(blip, track.Kind);
+                float markerScale = MarkerScaleFor(track.Target);
+                blip.Marker.transform.localScale = track.Kind == TrackKind.HeavyMissile
+                    ? new Vector3(markerScale * MissileCapsuleWidthFactor,
+                        markerScale * MissileCapsuleLengthFactor,
+                        markerScale * MissileCapsuleWidthFactor)
+                    : Vector3.one * markerScale;
                 blip.Marker.transform.localPosition = displayPos;
 
                 if (track.Kind == TrackKind.Ship)
@@ -882,8 +1105,17 @@ namespace BeyondSpiderAssembly
                         ? Quaternion.LookRotation(velLocal.normalized, Vector3.up)
                         : Quaternion.identity;
                 }
+                else if (track.Kind == TrackKind.HeavyMissile)
+                {
+                    // Capsule long axis along the missile's velocity — full 3D, not projected to
+                    // the radar plane: the display is a 3D scene, so a diving missile should
+                    // visibly point down through the grid.
+                    Vector3 velRadar = CaptainLocalToRadarSpace(captain.InverseTransformDirection(track.Velocity));
+                    blip.Marker.transform.localRotation = velRadar.sqrMagnitude > 0.01f
+                        ? Quaternion.FromToRotation(Vector3.up, velRadar.normalized)
+                        : Quaternion.identity;
+                }
 
-                Color color = SpaceBallistics.IsHostile(ship.Captain, track.Target) ? Color.red : Color.green;
                 SetRendererColor(blip.Marker.GetComponent<Renderer>(), color);
                 UpdateDropLine(blip, displayPos, FireChannels.IsChannelTarget(ship, track.Target));
             }
@@ -928,7 +1160,11 @@ namespace BeyondSpiderAssembly
         private void SyncLockIcon(GameObject icon, ITrackable target, int channel, float alpha)
         {
             Blip lockedBlip;
-            if (target == null || !target.IsAlive || !blips.TryGetValue(target, out lockedBlip))
+            // Marker == null: the locked contact is currently past the displayed range and shows
+            // only as an edge arrow — no blip to ring, so the reticle sits out until it returns
+            // (same "a lock is still a lock, just not drawn" rule as a filtered-out lock).
+            if (target == null || !target.IsAlive || !blips.TryGetValue(target, out lockedBlip)
+                || lockedBlip.Marker == null)
             {
                 icon.SetActive(false);
                 return;
@@ -940,9 +1176,12 @@ namespace BeyondSpiderAssembly
             // Size the reticle to the locked marker so it always frames the blip. A fixed size was
             // smaller than a scaled-up heavy-missile dot and vanished behind it; scaling a bit larger
             // than the marker keeps the reticle encircling whatever it's locked onto, big or small.
+            // Largest scale component, because missile capsules are non-uniform (slim x/z, long y).
             // Higher channels ring slightly wider so several locks on one blip nest concentrically.
+            Vector3 markerSize = lockedMarker.transform.localScale;
+            float extent = Mathf.Max(markerSize.x, Mathf.Max(markerSize.y, markerSize.z));
             float ratio = LockIconMarkerScaleRatio * (1f + LockIconChannelScaleStep * channel);
-            icon.transform.localScale = Vector3.one * (lockedMarker.transform.localScale.x * ratio);
+            icon.transform.localScale = Vector3.one * (extent * ratio);
             // Billboard toward the orbiting radar camera every frame — the quad's own rotation
             // never changes otherwise, so it would render edge-on/backwards once the player
             // orbits away from whatever angle it happened to be built facing.
@@ -1483,7 +1722,7 @@ namespace BeyondSpiderAssembly
                 {
                     continue;
                 }
-                if (!pair.Value.Marker.activeSelf)
+                if (pair.Value.Marker == null || !pair.Value.Marker.activeSelf)
                 {
                     continue;
                 }
@@ -1495,6 +1734,33 @@ namespace BeyondSpiderAssembly
                 }
 
                 float distance = Vector2.Distance(new Vector2(projected.x, projected.y), rtPoint);
+                if (distance >= bestDistance)
+                {
+                    continue;
+                }
+
+                best = candidate;
+                bestDistance = distance;
+            }
+
+            // Edge arrows are clickable too: an off-display contact has no marker, but its arrow
+            // marks a definite spot on the border, and locking from there beats zooming out first.
+            for (int i = 0; i < edgeIndicators.Count; i++)
+            {
+                ITrackable candidate = edgeIndicators[i].Target;
+                if (candidate == null || !candidate.IsAlive || !(candidate is ILockable))
+                {
+                    continue;
+                }
+                if (ReferenceEquals(candidate, ship.Core))
+                {
+                    continue;
+                }
+
+                Vector2 pixel = new Vector2(
+                    edgeIndicators[i].Viewport.x * radarCamera.pixelWidth,
+                    edgeIndicators[i].Viewport.y * radarCamera.pixelHeight);
+                float distance = Vector2.Distance(pixel, rtPoint);
                 if (distance >= bestDistance)
                 {
                     continue;
@@ -1521,10 +1787,87 @@ namespace BeyondSpiderAssembly
             Rect rect = CurrentPanelRect();
             ConsumePanelMouseEvent(rect);
             DrawRadarTexture(rect);
+            DrawRingLabels(rect);
+            DrawEdgeArrows(rect);
             DrawPanelFrame(rect);
             DrawChannelTabs(rect);
             DrawFilterBar(rect);
             DrawRingScaleLabel(rect);
+        }
+
+        // Range readout on each grid ring, drawn where the ring passes nearest the viewer (the
+        // camera's forward projected onto the radar plane points away from the viewer, so the near
+        // side is its negation — labels sit along the screen's bottom half and follow the orbit).
+        private void DrawRingLabels(Rect rect)
+        {
+            if (radarCamera == null || gridTransform == null || pocketRoot == null)
+            {
+                return;
+            }
+            if (ringLabelStyle == null)
+            {
+                ringLabelStyle = new GUIStyle(GUI.skin.label);
+                ringLabelStyle.alignment = TextAnchor.MiddleCenter;
+                ringLabelStyle.fontSize = 10;
+                ringLabelStyle.normal.textColor = new Color(0.55f, 0.95f, 1f, 0.85f);
+            }
+
+            float ringStep = ComputeRingStepMeters();
+            // The grid mesh scales continuously with zoom (UpdateGridScale); ring radii must track
+            // the same scale or the labels drift off their rings between snap tiers.
+            float gridScale = gridTransform.localScale.x;
+            Vector3 planar = radarCamera.transform.forward;
+            planar.y = 0f;
+            Vector3 nearSide = planar.sqrMagnitude > 0.001f ? -planar.normalized : Vector3.back;
+
+            for (int ring = 1; ring <= RingCount; ring++)
+            {
+                float radius = DisplayRadius * ring / RingCount * gridScale;
+                Vector3 world = pocketRoot.TransformPoint(nearSide * radius);
+                Vector3 viewport = radarCamera.WorldToViewportPoint(world);
+                if (viewport.z <= 0f
+                    || viewport.x < RingLabelEdgeMargin || viewport.x > 1f - RingLabelEdgeMargin
+                    || viewport.y < RingLabelEdgeMargin || viewport.y > 1f - RingLabelEdgeMargin)
+                {
+                    continue;
+                }
+
+                Vector2 screen = new Vector2(
+                    rect.x + viewport.x * rect.width,
+                    rect.y + (1f - viewport.y) * rect.height);
+                string text = (ringStep * ring).ToString("0") + "m";
+                // Nudged up a few pixels so the text rides just above the ring line.
+                GUI.Label(new Rect(screen.x - 30f, screen.y - 16f, 60f, 14f), text, ringLabelStyle);
+            }
+        }
+
+        private void DrawEdgeArrows(Rect rect)
+        {
+            if (edgeIndicators.Count == 0 || edgeArrowTexture == null)
+            {
+                return;
+            }
+
+            Color previousColor = GUI.color;
+            Matrix4x4 previousMatrix = GUI.matrix;
+            for (int i = 0; i < edgeIndicators.Count; i++)
+            {
+                EdgeIndicator indicator = edgeIndicators[i];
+                Vector2 pivot = new Vector2(
+                    rect.x + indicator.Viewport.x * rect.width,
+                    rect.y + (1f - indicator.Viewport.y) * rect.height);
+                // RotateAroundPivot turns clockwise on screen; AngleDeg was measured the same way
+                // (atan2 of the y-up viewport bearing), so up-pointing texture -> bearing.
+                GUIUtility.RotateAroundPivot(indicator.AngleDeg, pivot);
+                GUI.color = indicator.Color;
+                GUI.DrawTexture(new Rect(
+                    pivot.x - EdgeArrowSizePixels * 0.5f,
+                    pivot.y - EdgeArrowSizePixels * 0.5f,
+                    EdgeArrowSizePixels,
+                    EdgeArrowSizePixels), edgeArrowTexture);
+                GUI.matrix = previousMatrix;
+            }
+            GUI.color = previousColor;
         }
 
         // 雷达筛选 bar above the panel's top edge — same IMGUI-drawn, Update()-clicked arrangement

@@ -58,10 +58,14 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Mod.cs" />
+    <Compile Include="NetAuthority.cs" />
     <Compile Include="MacroBalance.cs" />
     <Compile Include="SpaceBalance.cs" />
     <Compile Include="IKineticTarget.cs" />
     <Compile Include="SpaceCombatCore.cs" />
+    <Compile Include="SpaceBoundary.cs" />
+    <Compile Include="HostControlNet.cs" />
+    <Compile Include="HostControlPanel.cs" />
     <Compile Include="ShipPartition.cs" />
     <Compile Include="SpaceBlock.cs" />
     <Compile Include="MInfo.cs" />
@@ -71,8 +75,14 @@
     <Compile Include="SpaceShipCore.cs" />
     <Compile Include="SpaceCaptainBlock.cs" />
     <Compile Include="SuperCapacitorBlock.cs" />
+    <Compile Include="SubsystemDetonation.cs" />
+    <Compile Include="ThrustAllocator.cs" />
+    <Compile Include="ThrusterBlock.cs" />
+    <Compile Include="ThrusterFx.cs" />
+    <Compile Include="ThrusterNet.cs" />
     <Compile Include="RadarPanelBlock.cs" />
     <Compile Include="ShieldProjectorBlock.cs" />
+    <Compile Include="ShieldHexFx.cs" />
     <Compile Include="MissileGuidance.cs" />
     <Compile Include="MissileLauncherBlock.cs" />
     <Compile Include="SpaceBallistics.cs" />

@@ -16,6 +16,55 @@ namespace BeyondSpiderAssembly
             Body = GetComponent<Rigidbody>();
         }
 
+        // Indestructible connection points (damage-refinement spec, WW2-Naval Gun.cs precedent —
+        // `blockJoint.breakForce/breakTorque = float.PositiveInfinity` on the cannon barrel so
+        // recoil never rips it off): every mod block's own joint to its neighbor is unbreakable
+        // from the moment simulation starts, so ships hold together under recoil, collision and
+        // hard maneuvering instead of shaking themselves apart. Subsystems that SHOULD still blow
+        // off under a direct hit (SpaceShipCore/SuperCapacitorBlock) override this at detonation
+        // time via BreakOwnConnectionJoints. Vanilla wood/log armor blocks are a separate system
+        // (NanoArmorBehaviour) with its own progressive structural-weakening pipeline and are
+        // untouched by this.
+        public override void OnSimulateStart()
+        {
+            base.OnSimulateStart();
+            if (BlockBehaviour != null && BlockBehaviour.blockJoint != null)
+            {
+                BlockBehaviour.blockJoint.breakForce = float.PositiveInfinity;
+                BlockBehaviour.blockJoint.breakTorque = float.PositiveInfinity;
+            }
+        }
+
+        // Detonation counterpart to the above: zeroes this block's own connection joints so the
+        // next physics step tears it free, then the caller's own explosion force sends it flying —
+        // the same outcome NanoArmorBehaviour.ApplyStructuralWeakening reaches gradually, but done
+        // in one shot for a subsystem that blows up outright.
+        protected void BreakOwnConnectionJoints()
+        {
+            if (BlockBehaviour == null)
+            {
+                return;
+            }
+            foreach (var joint in BlockBehaviour.iJointTo)
+            {
+                if (joint == null)
+                {
+                    continue;
+                }
+                joint.breakForce = 0f;
+                joint.breakTorque = 0f;
+            }
+            foreach (var joint in BlockBehaviour.jointsToMe)
+            {
+                if (joint == null)
+                {
+                    continue;
+                }
+                joint.breakForce = 0f;
+                joint.breakTorque = 0f;
+            }
+        }
+
         // The ship this block is CONNECTED to (tick-3 connectivity partition, ADR-0011) — no
         // longer "the player's ship": one player may field several, and each block belongs to
         // whichever ship's hull it is physically part of.

@@ -1,8 +1,54 @@
+using System.Collections.Generic;
 using Modding;
 using UnityEngine;
 
 namespace BeyondSpiderAssembly
 {
+    // MP replication for the laser pulse (the fire-event pattern): the host resolves the raycast +
+    // damage in FirePulse and broadcasts the beam endpoint plus a hit classification; each client's
+    // matching barrel replays the beam and the matching impact flavor. Damage never rides along —
+    // the hitType exists precisely so the client can pick the visual without re-running the hit.
+    public class LaserNet : SingleInstance<LaserNet>
+    {
+        public override string Name { get { return "BeyondSpider Laser Net"; } }
+
+        // Hit classification carried in FireMsg (drives the client's impact visual only).
+        public const int HitMiss = 0;       // no collider within range — beam to full range, no impact FX
+        public const int HitReflect = 1;    // intact nano-armor — mirrored reflection beam (needs normal + reflectivity)
+        public const int HitSparks = 2;     // stripped nano-armor — continuous spark shower
+        public const int HitPierce = 3;     // anything else (hull, missile, terrain) — pierce flash
+
+        // playerId, guidHash, endPoint, hitNormal (zero on miss), hitType, reflectivity
+        public static MessageType FireMsg = ModNetworking.CreateMessageType(
+            DataType.Integer, DataType.Integer, DataType.Vector3, DataType.Vector3, DataType.Integer, DataType.Single);
+
+        private readonly Dictionary<string, LaserLanceBlock> barrels = new Dictionary<string, LaserLanceBlock>();
+
+        public void Register(LaserLanceBlock barrel)
+        {
+            barrels[Key(barrel.PlayerID, barrel.GuidHash)] = barrel;
+        }
+
+        public void Unregister(LaserLanceBlock barrel)
+        {
+            barrels.Remove(Key(barrel.PlayerID, barrel.GuidHash));
+        }
+
+        public void FireReceiver(Message msg)
+        {
+            LaserLanceBlock barrel;
+            if (barrels.TryGetValue(Key((int)msg.GetData(0), (int)msg.GetData(1)), out barrel) && barrel != null)
+            {
+                barrel.ReceiveFire((Vector3)msg.GetData(2), (Vector3)msg.GetData(3), (int)msg.GetData(4), (float)msg.GetData(5));
+            }
+        }
+
+        private static string Key(int playerId, int guid)
+        {
+            return playerId + ":" + guid;
+        }
+    }
+
     // 光矛 / Laser Lance. A barrel-only weapon in the same family as RailgunBarrelBlock — same
     // Fire key / Fire Control toggle / Gun Group, same SpaceGunner aiming, same Weapon-bus energy,
     // same build-mode-scale-derived read-only stats, same reload-ring HUD — but it fires an
@@ -67,6 +113,8 @@ namespace BeyondSpiderAssembly
         private static readonly Color BeamCoreColor = new Color(0.55f, 0.9f, 1f, 1f);
         private static readonly Color BeamEdgeColor = new Color(0.85f, 1f, 1f, 1f);
         private static readonly Color BeamBoltColor = new Color(0.75f, 0.85f, 1f, 1f);
+
+        public int GuidHash { get; private set; }
 
         private float reloadTime;
         private float reload;
@@ -135,6 +183,8 @@ namespace BeyondSpiderAssembly
             reloadTime = Mathf.Clamp(0.15f + apertureMm / 900f, 0.1f, 2f);
             reload = reloadTime;
             manualFireQueued = false;
+            GuidHash = BlockBehaviour.BuildingBlock.Guid.GetHashCode();
+            LaserNet.Instance.Register(this);
             InitBeamFx();
             ShipState ship = OwnShip();
             if (ship != null)
@@ -151,6 +201,7 @@ namespace BeyondSpiderAssembly
 
         public override void OnSimulateStop()
         {
+            LaserNet.Instance.Unregister(this);
             ShipState ship = OwnShip();
             if (ship != null)
             {
@@ -219,11 +270,15 @@ namespace BeyondSpiderAssembly
 
             Vector3 muzzle = ApproximateMuzzlePosition();
             Vector3 endPoint = muzzle + direction * range;
+            int hitType = LaserNet.HitMiss;
+            Vector3 hitNormal = Vector3.zero;
+            float reflectivity = 0f;
 
             RaycastHit hit;
             if (RaycastBeam(muzzle, direction, out hit))
             {
                 endPoint = hit.point;
+                hitNormal = hit.normal;
                 float falloff = Mathf.Lerp(1f, MinDamageFalloff, Mathf.Clamp01(hit.distance / Mathf.Max(1f, range)));
                 float rawDamage = beamDamage * falloff;
 
@@ -238,18 +293,22 @@ namespace BeyondSpiderAssembly
                     // Intact coating is a mirror: the beam bounces off along the reflection of
                     // its own direction, carrying whatever range it had left. Visual only — the
                     // 5% that bites was already applied by RouteLaserHit above.
+                    hitType = LaserNet.HitReflect;
+                    reflectivity = armor.LaserReflectivity;
                     float remaining = Mathf.Clamp(range - hit.distance, MinReflectedBeamLength, range);
                     LaserImpactFx.PlayReflection(hit.point, direction, hit.normal, beamWidth,
-                        BeamCoreColor, BeamEdgeColor, BeamBoltColor, remaining, BeamVisibleTime, armor.LaserReflectivity);
+                        BeamCoreColor, BeamEdgeColor, BeamBoltColor, remaining, BeamVisibleTime, reflectivity);
                 }
                 else if (armor != null)
                 {
                     // Coating stripped below the mirror threshold: the beam is burning metal now,
                     // so the impact point sprays a continuous shower of sparks instead.
+                    hitType = LaserNet.HitSparks;
                     LaserImpactFx.PlayArmorSparks(hit.point, hit.normal, hit.collider.transform, apertureMm);
                 }
                 else
                 {
+                    hitType = LaserNet.HitPierce;
                     SpaceEffectAssets.PlayPierceEffect(endPoint, apertureMm);
                 }
             }
@@ -258,7 +317,63 @@ namespace BeyondSpiderAssembly
             {
                 beamFx.Show(muzzle, endPoint, BeamVisibleTime, 1f);
             }
+
+            // FirePulse only runs host-side (both fire paths hang off SimulateFixedUpdateHost) —
+            // broadcast the resolved beam so every client's matching barrel replays it.
+            if (StatMaster.isMP)
+            {
+                ModNetworking.SendToAll(LaserNet.FireMsg.CreateMessage(
+                    PlayerID, GuidHash, endPoint, hitNormal, hitType, reflectivity));
+            }
             return true;
+        }
+
+        // Client replay of a host pulse (routed here by LaserNet.FireReceiver via this barrel's
+        // PlayerID+GuidHash): beam to the host's endpoint plus the impact flavor the hitType names.
+        // Display only — no raycast for damage, no energy, no missile/armor calls. The beam origin
+        // is this replica barrel's own muzzle, so the beam stays glued to the (vanilla-synced)
+        // turret pose even if it lags the host's a frame.
+        public void ReceiveFire(Vector3 endPoint, Vector3 hitNormal, int hitType, float reflectivity)
+        {
+            reload = 0f;
+            Vector3 muzzle = ApproximateMuzzlePosition();
+
+            if (hitType == LaserNet.HitReflect)
+            {
+                Vector3 incoming = endPoint - muzzle;
+                float dist = incoming.magnitude;
+                if (dist > 0.001f)
+                {
+                    float remaining = Mathf.Clamp(range - dist, MinReflectedBeamLength, range);
+                    LaserImpactFx.PlayReflection(endPoint, incoming / dist, hitNormal, beamWidth,
+                        BeamCoreColor, BeamEdgeColor, BeamBoltColor, remaining, BeamVisibleTime, reflectivity);
+                }
+            }
+            else if (hitType == LaserNet.HitSparks)
+            {
+                // No follow transform on clients (the hit collider isn't identified in the message);
+                // the spark shower just doesn't track a moving plate — LaserSparkFx handles null.
+                LaserImpactFx.PlayArmorSparks(endPoint, hitNormal, null, apertureMm);
+            }
+            else if (hitType == LaserNet.HitPierce)
+            {
+                SpaceEffectAssets.PlayPierceEffect(endPoint, apertureMm);
+            }
+
+            if (beamFx != null)
+            {
+                beamFx.Show(muzzle, endPoint, BeamVisibleTime, 1f);
+            }
+        }
+
+        // Client-side reload ticking for the OnGUI ring (the host ticks inside
+        // SimulateFixedUpdateHost, which never runs here).
+        private void FixedUpdate()
+        {
+            if (BlockBehaviour != null && BlockBehaviour.isSimulating && StatMaster.isClient)
+            {
+                reload = Mathf.Min(reloadTime, reload + Time.fixedDeltaTime);
+            }
         }
 
         private bool RaycastBeam(Vector3 origin, Vector3 direction, out RaycastHit best)
@@ -275,8 +390,17 @@ namespace BeyondSpiderAssembly
             for (int i = 0; i < hits.Length; i++)
             {
                 // No own-ship skip: laser damage ignores IFF exactly like kinetic rounds, so a beam
-                // strikes own / friendly armour if it sits in the line of fire (ADR-0007).
+                // strikes own / friendly armour if it sits in the line of fire (ADR-0007). The one
+                // exception is an unrecognized trigger collider (e.g. the spectator camera's own
+                // collider) — real hit volumes (missile capsules, block hitboxes) are excluded from
+                // that check so the beam still catches them.
                 RaycastHit candidate = hits[i];
+                if (SpaceCombatUtil.IsUnrecognizedObstacle(candidate.collider)
+                    && candidate.collider.GetComponentInParent<MissileProjectile>() == null
+                    && candidate.collider.GetComponentInParent<BlockBehaviour>() == null)
+                {
+                    continue;
+                }
                 if (candidate.distance < bestDistance)
                 {
                     bestDistance = candidate.distance;

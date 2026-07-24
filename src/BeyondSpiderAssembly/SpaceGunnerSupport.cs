@@ -227,6 +227,12 @@ namespace BeyondSpiderAssembly
 
         private void FixedUpdate()
         {
+            // MP rule: hinge driving is physics — replica machines on clients are positioned by
+            // vanilla sync, so forcing wheel state / waking bodies there only fights it.
+            if (NetAuthority.IsClient)
+            {
+                return;
+            }
             if (owners.Count <= 0 || Wheel == null || Block == null || !Block.isSimulating)
             {
                 return;
@@ -290,6 +296,21 @@ namespace BeyondSpiderAssembly
             if (owners.Count == 0)
             {
                 RestoreOriginals();
+            }
+        }
+
+        // World-space hinge axis, normalized. A rotation about an axis maps that axis to
+        // itself, so this is stable no matter how far the hinge has already turned.
+        public Vector3 WorldAxis
+        {
+            get
+            {
+                if (Wheel == null)
+                {
+                    return Vector3.zero;
+                }
+                Vector3 axisWorld = transform.rotation * Wheel.axis;
+                return axisWorld.sqrMagnitude < 0.0001f ? Vector3.zero : axisWorld.normalized;
             }
         }
 

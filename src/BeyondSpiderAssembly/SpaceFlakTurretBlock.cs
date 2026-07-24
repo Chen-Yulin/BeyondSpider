@@ -177,6 +177,23 @@ namespace BeyondSpiderAssembly
         // channel-0 threats it engages, sticky until that target drops off the list.
         private readonly FireChannelAssignment channel0Assignment = new FireChannelAssignment();
 
+        // Rate feed-forward, ADR-0016 (same fix as the gunner's DriveHinges). Two 0.2-per-tick
+        // ease stages sit between the computed target angles and the muzzle: StepAngle's ease
+        // zone lags a moving setpoint by (1-0.2)/0.2 = 4 ticks of its rate, and the currentYaw/
+        // currentPitch pose lerp adds 4 more — so while tracking, the barrel trails the computed
+        // lead by 8 ticks of target-angle rate. Leading the commanded angles by exactly that
+        // cancels the mean lag. The rate is measured on the RAW solution angles (never on the
+        // led ones — that would feed back), clamped to trackingSpeed (leading faster than the
+        // mount can slew is meaningless), and reset on target change, lost target, or a jump.
+        private const float AngleLagTicks = 8f;
+        private const float AngleRateSmoothing = 0.25f;
+        private const float AngleRateJumpResetDegrees = 5f;
+
+        private bool hasAngleHistory;
+        private Vector2 prevRawTargetAngles;
+        private Vector2 targetAngleRate; // deg per tick, smoothed
+        private ITrackable angleRateTarget;
+
         public override void SafeAwake()
         {
             base.SafeAwake();
@@ -212,6 +229,9 @@ namespace BeyondSpiderAssembly
             GuidHash = BlockBehaviour.BuildingBlock.Guid.GetHashCode();
             active = DefaultActive.IsActive;
             channel0Assignment.Clear();
+            hasAngleHistory = false;
+            targetAngleRate = Vector2.zero;
+            angleRateTarget = null;
             ResolveType();
             originVis = transform.Find("Vis") == null ? null : transform.Find("Vis").gameObject;
             InitSimulationModel();
@@ -305,6 +325,12 @@ namespace BeyondSpiderAssembly
         {
             if (BlockBehaviour != null && BlockBehaviour.isSimulating && StatMaster.isClient)
             {
+                // Mirror pose smoothing (MP rule: clients display only). DriveTurret is
+                // host-only, so without advancing currentYaw/currentPitch here toward the
+                // host-sent pose (ReceiveNetworkState stores it in realYaw/realPitch), a
+                // replica turret rendered frozen at its rest pose.
+                currentYaw = Mathf.LerpAngle(currentYaw, realYaw, 0.2f);
+                currentPitch = Mathf.LerpAngle(currentPitch, realPitch, 0.2f);
                 ApplyVisualPose();
             }
         }
@@ -375,6 +401,37 @@ namespace BeyondSpiderAssembly
             hasTarget = true;
             engagedTarget = solution.Target;
             AimAnglesFor(aimPoint, out targetYaw, out targetPitch);
+            ApplyAngleFeedForward();
+        }
+
+        // Leads targetYaw/targetPitch by the tracking loop's known lag (see the AngleLagTicks
+        // field comment). Runs only on the success path above; DriveTurret clears the history
+        // on any tick without a target, so a re-acquire always starts from zero rate.
+        private void ApplyAngleFeedForward()
+        {
+            float yawDelta = Mathf.DeltaAngle(prevRawTargetAngles.x, targetYaw);
+            float pitchDelta = targetPitch - prevRawTargetAngles.y;
+            bool continuous = hasAngleHistory && angleRateTarget == engagedTarget
+                && Mathf.Abs(yawDelta) < AngleRateJumpResetDegrees
+                && Mathf.Abs(pitchDelta) < AngleRateJumpResetDegrees;
+            if (continuous)
+            {
+                Vector2 instantRate = new Vector2(
+                    Mathf.Clamp(yawDelta, -trackingSpeed, trackingSpeed),
+                    Mathf.Clamp(pitchDelta, -trackingSpeed, trackingSpeed));
+                targetAngleRate = Vector2.Lerp(targetAngleRate, instantRate, AngleRateSmoothing);
+            }
+            else
+            {
+                targetAngleRate = Vector2.zero;
+            }
+
+            hasAngleHistory = true;
+            angleRateTarget = engagedTarget;
+            prevRawTargetAngles = new Vector2(targetYaw, targetPitch);
+
+            targetYaw += targetAngleRate.x * AngleLagTicks;
+            targetPitch += targetAngleRate.y * AngleLagTicks;
         }
 
         // The Vis hierarchy bakes in a fixed 90 deg X rotation (see InitSimulationModel's
@@ -444,6 +501,10 @@ namespace BeyondSpiderAssembly
                 }
                 realPitch = Mathf.Clamp(realPitch, -5f, 90f);
                 ready = Mathf.Abs(Mathf.DeltaAngle(realYaw, targetYaw)) + Mathf.Abs(Mathf.DeltaAngle(realPitch, targetPitch)) < 10f;
+            }
+            else
+            {
+                hasAngleHistory = false;
             }
 
             currentYaw = Mathf.LerpAngle(currentYaw, realYaw + randomError.x, 0.2f);
