@@ -624,30 +624,9 @@ namespace BeyondSpiderAssembly
             capsule.radius = MissileLauncherAssets.ColliderRadius(type);
             capsule.height = MissileLauncherAssets.ColliderHeight(type);
             capsule.center = MissileLauncherAssets.ColliderCenter(type);
-            BuildTriggerVis(go.transform, capsule);
 
             MissileProjectile missile = go.AddComponent<MissileProjectile>();
             missile.Configure(PlayerID, Team, type, target, netId, channelMask, OwnShip(), ArmDelay.Value);
-        }
-
-        // Debug aid: OnDrawGizmos never renders outside the Unity Editor, so the only way to see the
-        // trigger capsule's actual size/offset during real play is an honest-to-god mesh. Built from
-        // Unity's own primitive capsule (radius 0.5, height 2, long axis Y) and rescaled/rotated onto
-        // the exact radius/height/center/direction=Z the real CapsuleCollider above uses, so it always
-        // matches even if MissileLauncherAssets' collider numbers change. Additive so it reads as a
-        // translucent overlay instead of hiding the missile mesh inside it.
-        private static void BuildTriggerVis(Transform parent, CapsuleCollider capsule)
-        {
-            GameObject vis = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-            vis.name = "TriggerVis";
-            Object.DestroyImmediate(vis.GetComponent<Collider>());
-            vis.transform.SetParent(parent, false);
-            vis.transform.localPosition = capsule.center;
-            vis.transform.localRotation = Quaternion.Euler(90f, 0f, 0f); // primitive's Y axis -> local Z
-            vis.transform.localScale = new Vector3(capsule.radius * 2f, capsule.height * 0.5f, capsule.radius * 2f);
-            Material material = new Material(Shader.Find("Particles/Additive"));
-            material.SetColor("_TintColor", new Color(0.2f, 1f, 1f, 0.5f));
-            vis.GetComponent<Renderer>().material = material;
         }
 
         // Monotonic per-session source of shared missile ids. Minted only on the host (ExecuteFire is

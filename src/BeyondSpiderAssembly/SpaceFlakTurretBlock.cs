@@ -981,23 +981,37 @@ namespace BeyondSpiderAssembly
             gunObject.GetComponent<MeshFilter>().sharedMesh = ModResource.GetMesh(SpaceFlakTurretAssets.GunMeshName[type]).Mesh;
             gunObject.GetComponent<MeshRenderer>().material.mainTexture = ModResource.GetTexture(SpaceFlakTurretAssets.GunTextureName[type]).Texture;
 
-            // Offsets below are all zero pending in-game tuning — nobody has checked yet where
-            // each type's PaoZuo/PaoTa/PaoGuan pivots actually land once loaded, unlike the old
-            // per-type arrays which were hand-tuned against the WW2 meshes they shipped with.
+            // MountOffset/TurretOffset/GunOffset/GunBaseOffset are authored in world units, in
+            // the block's own local axes (x=right, y=up, z=forward — same convention as
+            // simRoot.transform.localPosition). Build-mode Base/Gun sit flat, directly under Vis
+            // with no extra scale or rotation, so that frame already IS the block's local frame —
+            // the arrays apply as-is. Simulation's equivalents sit under simRoot instead, which is
+            // scaled to 0.2 and rotated 90° about X relative to the block, so WorldOffsetToSimLocal
+            // undoes both before the value is a valid child localPosition there.
             if (simulation)
+            {
+                mountObject.transform.localPosition = WorldOffsetToSimLocal(SpaceFlakTurretAssets.MountOffset[type]);
+                baseObject.transform.localPosition = WorldOffsetToSimLocal(SpaceFlakTurretAssets.TurretOffset[type]);
+                gunObject.transform.localPosition = WorldOffsetToSimLocal(SpaceFlakTurretAssets.GunOffset[type]);
+                pitchTransform.localPosition = WorldOffsetToSimLocal(SpaceFlakTurretAssets.GunBaseOffset[type]);
+            }
+            else
             {
                 mountObject.transform.localPosition = SpaceFlakTurretAssets.MountOffset[type];
                 baseObject.transform.localPosition = SpaceFlakTurretAssets.TurretOffset[type];
                 gunObject.transform.localPosition = SpaceFlakTurretAssets.GunOffset[type];
                 pitchTransform.localPosition = SpaceFlakTurretAssets.GunBaseOffset[type];
             }
-            else
-            {
-                Vector3 offset = SpaceFlakTurretAssets.TurretOffset[type] * 0.2f;
-                baseObject.transform.localPosition = new Vector3(offset.x, -offset.z, offset.y);
-                gunObject.transform.localPosition = SpaceFlakTurretAssets.GunOffset[type];
-                pitchTransform.localPosition = SpaceFlakTurretAssets.GunBaseOffset[type] - offset * 5f;
-            }
+        }
+
+        // Inverse of simRoot's transform (0.2 scale, 90°-about-X rotation relative to the
+        // block): world = Rx(90) * (simLocal * 0.2), so simLocal = Rx(-90) * world / 0.2, and
+        // Rx(-90) applied to (x,y,z) is (x, z, -y) — derived from, and must stay consistent
+        // with, the axis relationship simRoot bakes in via InitSimulationModel's
+        // localEulerAngles = (90, 0, 0).
+        private static Vector3 WorldOffsetToSimLocal(Vector3 worldOffset)
+        {
+            return new Vector3(worldOffset.x, worldOffset.z, -worldOffset.y) * 5f;
         }
 
         private void ApplyVisualPose()
@@ -1155,9 +1169,12 @@ namespace BeyondSpiderAssembly
         // caliber further for a ship built bigger, not smaller.
         public static readonly int[] GunCount = { 1, 2, 1 };
 
-        // All zero pending in-game tuning — nobody has checked yet where each type's PaoZuo/
-        // PaoTa/PaoGuan pivots actually land once loaded, unlike the old per-type arrays which
-        // were hand-tuned against the WW2 meshes they shipped with.
+        // World-unit offsets (block's own local axes: x=right, y=up, z=forward) — see
+        // WorldOffsetToSimLocal in SpaceFlakTurretBlock for how these get applied under
+        // simRoot's scale/rotation in simulation, and untouched in build mode. Still pending
+        // real in-game tuning for most entries — nobody has checked yet where each type's
+        // PaoZuo/PaoTa/PaoGuan pivots actually land once loaded, unlike the old per-type arrays
+        // which were hand-tuned against the WW2 meshes they shipped with.
         public static readonly Vector3[] MountOffset = new Vector3[TypeCount];
         public static readonly Vector3[] TurretOffset = new Vector3[TypeCount];
         public static readonly Vector3[] GunOffset = new Vector3[TypeCount];
@@ -1181,9 +1198,14 @@ namespace BeyondSpiderAssembly
             // table's nearest-caliber entries, effectively dead weight until that happens.
             GunWidth[0] = 0.07f;
             GunSpeed[0] = 7f;
+            // Converted from the pre-world-unit values (0,0,0.22)/(0,0,-0.2) so behavior is
+            // unchanged after the offset arrays switched to world units — these were only ever
+            // eyeballed at the old, much smaller scale, so they're still just placeholders.
+            MountOffset[0] = new Vector3(0f, 0, 0.22f);
 
             GunWidth[1] = 0.15f;
             GunSpeed[1] = 14f;
+            MountOffset[1] = new Vector3(0f, 0, -0.2f);
 
             // 近防炮 stays under 76 at rest scale, so this one actually drives the live tracer
             // stream — picked to read as a dense CIWS burst, not verified in-game.

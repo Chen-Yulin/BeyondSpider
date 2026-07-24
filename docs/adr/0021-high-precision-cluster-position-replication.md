@@ -20,6 +20,38 @@ code, ordering-fragile, needs the client's cluster membership, and is unverified
 without weighing it against just living with ADR-0019's precision. **Lesson for future ADRs: no
 `System.Reflection`, no Harmony — the loader validates against both.**
 
+## Reflection-free path (from ../ModernAirCombat H3Network) — viable, but a full subsystem
+
+Studied MAC's `H3Network` (`H3NetworkManager` / `H3NetworkBlock` / `H3ClustersTest` / `H3NetCompression`).
+It solves the exact problem reflection-free, and shows the piece the reverted attempt missed:
+
+- **The engine off-switch is `machine.networkBlocks = new NetworkBlock[0]`** — a **public field** on
+  `Machine`. Emptying it disables Besiege's own per-block networking for that machine wholesale. With the
+  engine net gone there is nothing to fight and **no private `transformMatrix` to write** — that is why
+  MAC never needed reflection. (My `pollTransform=false` only muted the *send* per base and left the
+  client's engine-side child-derivation running off the private matrix; emptying `networkBlocks` removes
+  the whole engine path instead.)
+- Position: full float via `BitConverter` (`H3NetCompression`, 12 B); rotation via the **public**
+  `NetworkCompression.CompressRotation` (7 B). Both reflection-free.
+- Apply: MAC reparents each cluster's blocks under one GameObject and sets `transform.position/rotation`
+  directly, with a per-block lerp in `Update` (`H3NetworkBlock`). No engine internals touched.
+
+**The catch — it's all-or-nothing.** Emptying `networkBlocks` means the engine no longer replicates ANY
+of that machine's blocks, so this system must then replicate **every** block itself; you can no longer
+"skip small debris clusters onto the engine stream". It stops being a precision add-on and becomes a
+full replacement for machine transform networking (MAC's is ~900 lines).
+
+**Leaner design for BeyondSpider (if built):** cluster children are rigid relative to their base, so we
+need not reparent or send per-child data like MAC does — empty `networkBlocks` for ship machines; host
+sends one full-float base pose per cluster; client captures each child's local offset once and each frame
+sets `child.transform = basePose ⊗ localOffset` plus the interpolated base. ~200 lines, reflection-free,
+public API only. Still owns 100% of the machine's block transforms, still untestable without a
+double-client session.
+
+**Recommendation:** ADR-0019's widened compression box already gives ≈0.15 m at 20 km with zero risk and
+is loading today. Build the H3-style replacement only if sub-0.15 m at extreme range is genuinely needed;
+otherwise the cost/risk (replace all machine networking, invasive, unplaytestable here) outweighs it.
+
 --- original design retained below for reference ---
 
 **Ask (user).** After removing the boundary, MP ships flying far out replicate imprecisely. Send our own
