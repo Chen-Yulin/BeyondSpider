@@ -1,10 +1,26 @@
 # High-precision per-cluster ship position replication (mod-side)
 
-**Status**: **implemented** (`ShipPoseNet.cs`), builds clean (`dotnet build`, 0 errors); **pending
-double-client playtest** — the reflection-based client apply (§5) and cluster-topology handling (§6)
-cannot be verified without a live two-peer session. It supersedes, for ship hulls, the multiplayer
-stopgap in ADR-0019 (widening the engine's position-compression box); that stopgap stays for anything
-still on the engine's stream (loose projectiles) and as the fallback.
+**Status**: **REVERTED — not viable as designed.** `ShipPoseNet.cs` was implemented and built clean,
+but on load Besiege's mod-security validator **rejected the whole assembly**:
+
+> `[Security] You are not allowed to use System.Reflection.FieldInfo (BeyondSpiderAssembly.ShipPoseNet::TransformMatrixField)`
+> `Assembly ... did not validate, not loading`
+
+**Besiege's loader forbids `System.Reflection` at runtime.** That is why this mod has never used it — it
+is *enforced*, not a style choice, and one banned symbol takes the entire DLL down (every feature stops
+loading, not just this one). The reflection wall in §5 is therefore not an "accepted fragility" — it is a
+**hard block**: the clean client apply *requires* writing a private engine field, and Besiege will not
+allow it. `ShipPoseNet.cs` and its registration were removed; the mod loads again.
+
+**What stands instead:** ADR-0019's widened MP position-compression box (≈0.15 m at 20 km) is the
+working answer for ship-hull precision, and stays. A reflection-FREE version of this ADR is possible in
+principle — position every cluster child by hand in `LateUpdate` (capture rigid local offsets, run after
+the engine's `UpdateEntity` so it wins) instead of reflecting the base's cached matrix — but it is more
+code, ordering-fragile, needs the client's cluster membership, and is unverified; **not** to be attempted
+without weighing it against just living with ADR-0019's precision. **Lesson for future ADRs: no
+`System.Reflection`, no Harmony — the loader validates against both.**
+
+--- original design retained below for reference ---
 
 **Ask (user).** After removing the boundary, MP ships flying far out replicate imprecisely. Send our own
 full-precision ship pose instead, reuse the engine's cluster system so we don't send one packet per
