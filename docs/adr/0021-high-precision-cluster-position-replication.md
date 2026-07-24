@@ -1,9 +1,10 @@
 # High-precision per-cluster ship position replication (mod-side)
 
-**Status**: **proposed — design only, not implemented.** This ADR is the plan; no code has been written
-for it yet. It supersedes, for ship hulls, the multiplayer stopgap in ADR-0019 (widening the engine's
-position-compression box); that stopgap stays for anything still on the engine's stream (loose
-projectiles) and as the fallback until this lands.
+**Status**: **implemented** (`ShipPoseNet.cs`), builds clean (`dotnet build`, 0 errors); **pending
+double-client playtest** — the reflection-based client apply (§5) and cluster-topology handling (§6)
+cannot be verified without a live two-peer session. It supersedes, for ship hulls, the multiplayer
+stopgap in ADR-0019 (widening the engine's position-compression box); that stopgap stays for anything
+still on the engine's stream (loose projectiles) and as the fallback.
 
 **Ask (user).** After removing the boundary, MP ships flying far out replicate imprecisely. Send our own
 full-precision ship pose instead, reuse the engine's cluster system so we don't send one packet per
@@ -77,16 +78,47 @@ blocks. It's **all-or-nothing** (no poll-position-only), which is *why* §3 also
 
 Non-base blocks are left alone — they already send no transform.
 
-## 5. Client apply
+## 5. Client apply — and the reflection wall (found during implementation)
 
-Client receives the batch, resolves each record's block by GuidHash, and drives that base's transform:
+Client receives the batch, resolves each record's block by GuidHash, and drives that base. But *how*
+the engine reconstructs a rigid cluster on the client makes the naive "just set `baseTransform`" wrong.
+Verified in `NetworkBlock.UpdateEntity` (runs every frame per block on the client):
 
-- Set `baseTransform.position` = streamed full-float position; `baseTransform.rotation` = decompressed
-  rotation. Children follow via the engine's existing `transformMatrix` derivation.
-- Because we stopped sending on the host, the client's `NetworkInterpolation` for that base gets no new
-  data and goes inactive on its own; if it still fights, mark it stopped / set the client base's
-  `pollTransform` handling to defer to us. Apply with the mod's own smoothing (ADR-0015 already has
-  client display smoothing to model on).
+- A **cluster base** sets `trackTransform` from its `posTracker` and caches
+  `transformMatrix = myTransform.localToWorldMatrix` — but **only inside `if (posTracker.isActive)`**.
+- A **child** re-derives `trackTransform.position = baseNetworkBlock.transformMatrix.MultiplyPoint3x4(posTracker.Vector)`
+  **every frame**, gated on a private `posActive` flag that is set once and **never reset** — so a child
+  keeps re-deriving from its base's cached matrix forever.
+
+Consequence of suppressing the base's stream (§4): its `posTracker` goes inactive → the base neither
+moves itself **nor refreshes its cached `transformMatrix`** → children keep re-deriving from a **frozen**
+matrix → the whole cluster freezes on the client, even if we set `baseTransform` by hand. To drive it we
+must keep the base's `transformMatrix` **current**, and:
+
+- `NetworkBlock.transformMatrix` is **`private`**, `posTracker`/`rotTracker` are **`protected`**, and
+  there is **no public setter / teleport / SetPosition** on `NetworkBlock` or `NetworkEntity` (grepped).
+- `posActive` (the thing that would otherwise let us stop the engine re-deriving) is also `private`.
+
+**So a correct, non-fighting client apply requires runtime reflection into an engine private field** —
+each frame, after setting `base.transform`, write `base`'s private `transformMatrix =
+base.transform.localToWorldMatrix` (cache the `FieldInfo`). Then the engine's own per-frame child
+re-derivation places every child of that cluster correctly, using the **client's** cluster membership
+(which the engine keeps in sync with the host via `ClusterResultData`), so we never position children
+ourselves. The base's own `UpdateEntity` won't fight us — with `posTracker` inactive it touches neither
+`trackTransform` nor `transformMatrix`.
+
+The alternative to reflection is to fight the engine: re-assert base + child transforms in `LateUpdate`
+every frame and hope to run after `UpdateEntity`. That's more fragile (ordering-dependent, double-positions
+every child) than one cached reflected field write, so reflection is preferred.
+
+**This is a departure worth calling out**: the mod has so far used no Harmony and no runtime reflection
+into game internals. Reflection ≠ Harmony (no patching, just a field write), the `FieldInfo` is cached so
+it's cheap, and the whole subsystem is gated on `BoundaryOff` — but it does couple us to a private field
+name that a future Besiege version could rename. Accepted for now as the only clean path to full-precision
+ships; revisit if the engine's cluster networking changes.
+
+Apply with the mod's own smoothing (lerp `base.transform` toward the latest received pose; ADR-0015's
+client display smoothing is the model).
 
 ## 6. Implementation rules — the four pitfalls, pinned
 
@@ -126,10 +158,29 @@ Client receives the batch, resolves each record's block by GuidHash, and drives 
 - **Widen worldBounds further (100 km+).** Still coarsens precision (0.76 m at 100 km) and never gets to
   full float; only defers the problem.
 
-## 9. Scope / status
+## 9. Implementation notes (`ShipPoseNet.cs`)
 
-Not implemented. When built it should be its own component (e.g. `ShipPoseNet` + a per-ship sender/
-applier), registered in `Mod.cs` beside the other `*Net` singletons, gated on `BoundaryOff`, with the §6
-rules as the acceptance checklist. Test on a double-client session: fly a ship tens of km out and confirm
-its remote position stays smooth and accurate, that suppressing `pollTransform` left no block frozen, and
-that breaking the ship apart mid-flight re-keys cleanly with no frozen debris.
+Built as `ShipPoseNet : SingleInstance`, registered in `Mod.cs` beside the other `*Net` singletons, with
+the §6 rules as the acceptance checklist. As built:
+
+- **Message** `PoseMsg(playerId, coreGuidHash, baseGuidHash, position:Vector3, rotationEuler:Vector3)`,
+  one per cluster base (no `DataType.Quaternion` exists, so rotation goes as full-float euler — bounded,
+  round-trips fine). Position is full-float `DataType.Vector3` — the whole point.
+- **Host** (`Update`, 20 Hz, gated `isMP && !isClient && levelSimulating && BoundaryOff`): walks each
+  ship's `machine.simClusters`, and per intact cluster (≥ `MinClusterBlocks`, capped `MaxRecordsPerShip`
+  so a shattered hull can't flood) sets the base `NetworkBlock.pollTransform = false`, dead-bands
+  (`PosThreshold`/`RotThresholdDeg`) with a 1 s keyframe, and sends. Bases that drop out of the live set
+  (re-partition, ship gone, cap, feature off) get `pollTransform = true` back — err toward re-enabling.
+- **Client** (`LateUpdate`): lerps the resolved base's transform toward the received pose and writes the
+  base's private `transformMatrix` via the cached `FieldInfo`; drops a base after `StaleTimeout` with no
+  update so the engine stream self-heals. Base resolved by GuidHash within `ship.Blocks`, cached.
+
+**Acceptance (needs the double-client playtest):** fly a ship tens of km out and confirm its remote
+position stays smooth and accurate; confirm suppressing `pollTransform` left no block frozen on the
+client; break the ship apart mid-flight and confirm it re-keys cleanly with no frozen debris; toggle
+无边界 off and confirm the engine stream resumes with no stuck blocks.
+
+**Known limitations of the first cut:** client smoothing is a plain lerp toward the latest pose (no
+velocity extrapolation — fast hulls may show minor latency between 20 Hz updates); reflection
+`SetValue` boxes the `Matrix4x4` per driven base per frame (minor GC, fine for a handful of clusters);
+rotation is euler, not the engine's smallest-three. All are tunable/replaceable if playtest shows need.

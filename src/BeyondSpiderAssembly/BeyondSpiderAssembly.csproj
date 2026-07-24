@@ -66,6 +66,7 @@
     <Compile Include="SpaceBoundary.cs" />
     <Compile Include="HostControlNet.cs" />
     <Compile Include="HostControlPanel.cs" />
+    <Compile Include="ShipPoseNet.cs" />
     <Compile Include="ShipPartition.cs" />
     <Compile Include="SpaceBlock.cs" />
     <Compile Include="MInfo.cs" />

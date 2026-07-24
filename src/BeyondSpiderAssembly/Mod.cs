@@ -19,6 +19,7 @@ namespace BeyondSpiderAssembly
 			Root.AddComponent<SpaceBoundary>();
 			Root.AddComponent<HostControlNet>();
 			Root.AddComponent<HostControlPanel>();
+			Root.AddComponent<ShipPoseNet>();
 			Root.AddComponent<SpaceFlakTurretNet>();
 			Root.AddComponent<SpaceGunnerNet>();
 			Root.AddComponent<SpaceGunnerHingeController>();
@@ -54,6 +55,7 @@ namespace BeyondSpiderAssembly
 			ModNetworking.Callbacks[ThrusterNet.KeyMsg] += ThrusterNet.Instance.KeyReceiver;
 			ModNetworking.Callbacks[ThrusterNet.OutputMsg] += ThrusterNet.Instance.OutputReceiver;
 			ModNetworking.Callbacks[HostControlNet.StateMsg] += HostControlNet.Instance.StateReceiver;
+			ModNetworking.Callbacks[ShipPoseNet.PoseMsg] += ShipPoseNet.Instance.PoseReceiver;
 			Debug.Log("BeyondSpider Space Combat loaded.");
 		}
 	}
